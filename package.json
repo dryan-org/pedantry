@@ -1,6 +1,6 @@
 {
   "name": "@dryan/pedantry",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Opinionated linting and formatting configs (ESLint, TypeScript, Prettier, Stylelint) and the pedantry CLI that syncs the rest",
   "type": "module",
   "scripts": {
@@ -41,12 +41,12 @@
     "@web/test-runner": ">=0.18",
     "@web/test-runner-commands": "*",
     "@web/test-runner-playwright": ">=0.11",
-    "eslint": ">=9",
+    "eslint": "^10.13.0",
     "lit": "*",
     "prettier": ">=3",
     "rollup": ">=4",
     "rollup-plugin-summary": ">=2",
-    "stylelint": ">=16",
+    "stylelint": "^17.16.0",
     "typescript": "~6.0.0",
     "vitest": ">=3"
   },
@@ -96,5 +96,14 @@
     "stylelint-config-recess-order": "^7.8.2",
     "stylelint-config-standard": "^40.0.0",
     "typescript-eslint": "^8.72.0"
+  },
+  "peerDependencies": {
+    "eslint": "^10",
+    "stylelint": "^17"
+  },
+  "peerDependenciesMeta": {
+    "stylelint": {
+      "optional": true
+    }
   }
 }

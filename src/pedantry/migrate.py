@@ -51,7 +51,9 @@ from pedantry.sync import (
     CLAUDE_IMPORT,
     ResolvedPin,
     compute,
+    describe_bumps,
     npm_pin_command,
+    peer_bumps,
     resolve_pin,
     run_npm,
 )
@@ -140,6 +142,7 @@ class Plan:
     npm_install: str | None
     types: list[ProjectType]
     symlinks: list[str] = field(default_factory=list)
+    npm_bumped: str | None = None
 
 
 # ---------------------------------------------------------------- helpers
@@ -973,6 +976,7 @@ def plan_migrate(
         init_submodule(root, report)
         report.actions.append("removed the .pedantry git submodule (not committed)")
     npm_install = None
+    npm_bumped = None
     uses_npm = bool(
         kinds & {ProjectType.TYPESCRIPT, ProjectType.JAVASCRIPT, ProjectType.CSS}
     )
@@ -983,7 +987,14 @@ def plan_migrate(
         and not vendor
         and not skip_npm
     ):
-        npm_install = f"npm install --save-dev github:dryan-org/pedantry#v{__version__}"
+        bumps = peer_bumps(root)
+        npm_install = " ".join(
+            [
+                "npm install --save-dev",
+                f"github:dryan-org/pedantry#v{__version__}",
+                *(f"{name}@{new}" for name, (_, new) in bumps.items()),
+            ]
+        )
         if shutil.which("npm") is None:
             report.manual.append(
                 f"npm is not installed, so @dryan/pedantry was not installed or "
@@ -992,6 +1003,12 @@ def plan_migrate(
             npm_install = None
         else:
             report.actions.append(f"ran `{npm_install}`")
+            if bumps:
+                npm_bumped = (
+                    "raised for pedantry's configs (eslint, @eslint/js and "
+                    f"stylelint need these majors): {', '.join(describe_bumps(bumps))}"
+                )
+                report.actions.append(npm_bumped)
 
     symlinks = submodule_symlinks(root)
 
@@ -1107,7 +1124,9 @@ def plan_migrate(
                 pending[path] = None
         elif read_text(root / path) != text:
             pending[path] = text
-    return Plan(report, pending, submodule, npm_install, list(chosen), symlinks)
+    return Plan(
+        report, pending, submodule, npm_install, list(chosen), symlinks, npm_bumped
+    )
 
 
 def report_new_ruleset(
@@ -1230,7 +1249,7 @@ def execute(root: Path, plan: Plan) -> None:
             plan.report.actions = [
                 action
                 for action in plan.report.actions
-                if action != f"ran `{plan.npm_install}`"
+                if action not in (f"ran `{plan.npm_install}`", plan.npm_bumped)
             ]
             plan.report.manual.append(note)
     for path, text in plan.edits.items():

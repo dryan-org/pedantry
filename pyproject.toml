@@ -1,6 +1,6 @@
 [project]
 name = "pedantry"
-version = "2.0.2"
+version = "2.0.3"
 description = "Shared lint and format configuration, synced into repos by the pedantry CLI"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -27,11 +27,11 @@ dev = [
 ]
 
 [tool.pedantry]
-version = "2.0.2"
+version = "2.0.3"
 types = ["python", "typescript", "css"]
 
 # >>> pedantry
-# pedantry 2.0.2: managed by pedantry sync, do not edit.
+# pedantry 2.0.3: managed by pedantry sync, do not edit.
 [tool.ruff]
 # Oldest Python this repo supports: [project] requires-python, else 3.13
 target-version = "py314"
