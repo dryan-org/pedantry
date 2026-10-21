@@ -1,0 +1,6 @@
+{
+  "name": "pedantry-consumer-fixture",
+  "private": true,
+  "type": "module",
+  "prettier": "@dryan/pedantry/prettier"
+}

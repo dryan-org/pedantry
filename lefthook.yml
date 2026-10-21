@@ -1,3 +1,5 @@
+# pedantry 2.0.0: managed by pedantry sync, do not edit.
+# Repo-specific hooks go in lefthook-local.yml, which lefthook merges in.
 pre-commit:
   parallel: false
   commands:
@@ -8,41 +10,55 @@ pre-commit:
         FILES=$(for f in {staged_files}; do
           [ -f "$f" ] && [ ! -L "$f" ] && echo "$f"
         done)
-        echo "Sending to prettier: $FILES"
         [ -z "$FILES" ] || npx prettier --write $FILES
       stage_fixed: true
 
-    # Lint JavaScript/TypeScript
+    # Lint JavaScript and TypeScript
     eslint:
       glob: "*.{js,ts,json}"
-      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || npx eslint --fix $FILES
+      run: |
+        FILES=$(for f in {staged_files}; do
+          [ -f "$f" ] && echo "$f"
+        done)
+        [ -z "$FILES" ] || npx eslint --fix $FILES
       stage_fixed: true
 
     # Lint CSS
     stylelint:
       glob: "*.css"
-      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || npx stylelint --fix $FILES
+      run: |
+        FILES=$(for f in {staged_files}; do
+          [ -f "$f" ] && echo "$f"
+        done)
+        [ -z "$FILES" ] || npx stylelint --fix $FILES
       stage_fixed: true
 
-    # Format and lint Python (if Python files exist)
+    # Format Python
     ruff-format:
       glob: "*.py"
-      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || uv run ruff format $FILES
+      run: |
+        FILES=$(for f in {staged_files}; do
+          [ -f "$f" ] && echo "$f"
+        done)
+        [ -z "$FILES" ] || uv run ruff format $FILES
       stage_fixed: true
 
+    # Lint Python
     ruff-check:
       glob: "*.py"
-      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || uv run ruff check --fix $FILES
+      run: |
+        FILES=$(for f in {staged_files}; do
+          [ -f "$f" ] && echo "$f"
+        done)
+        [ -z "$FILES" ] || uv run ruff check --fix $FILES
       stage_fixed: true
 
-    # Check for dead/unused code in Python
+    # Find dead Python code
     vulture:
       glob: "*.py"
-      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || uv run vulture $FILES
-      stage_fixed: false # vulture only reports, doesn't fix
-
-    # Upgrade Django code patterns (only for Django projects)
-    django-upgrade:
-      glob: "*.py"
-      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || uv run django-upgrade --target-version 5.1 $FILES
-      stage_fixed: true
+      run: |
+        FILES=$(for f in {staged_files}; do
+          [ -f "$f" ] && echo "$f"
+        done)
+        [ -z "$FILES" ] || uv run vulture $FILES
+      stage_fixed: false # reports only, fixes nothing

@@ -1,4 +1,4 @@
-name: CI
+name: ci
 
 on:
   pull_request:
@@ -8,8 +8,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  lint:
+  # Self-lint (the shared configs applied to this repo's own files: green means
+  # they still lint clean), the CLI's tests, and the managed-file check.
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,11 +26,27 @@ jobs:
       - run: npm ci --ignore-scripts
 
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --all-extras
+      - run: uv sync --frozen --all-extras
 
-      # These are the shared configs applied to this repo's own files -
-      # green means the configs still lint the repo clean.
       - run: npx eslint .
+      - run: npx tsc --noEmit
       - run: npx prettier --check .
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run ty check src tests
+      - run: uv run vulture src tests scripts
+      - run: uv run pedantry check
+      - run: uv run pytest
+
+  # Installs the npm package (packed, as a consumer gets it) into a fixture repo
+  # and runs eslint, tsc, prettier and stylelint with it.
+  npm-consumer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+      - run: npm ci --ignore-scripts
+      - run: node --test tests/npm-consumer/

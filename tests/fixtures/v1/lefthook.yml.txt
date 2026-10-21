@@ -1,0 +1,48 @@
+pre-commit:
+  parallel: false
+  commands:
+    # Format files
+    prettier:
+      glob: "*.{js,ts,json,css,html,md,yml,yaml}"
+      run: |
+        FILES=$(for f in {staged_files}; do
+          [ -f "$f" ] && [ ! -L "$f" ] && echo "$f"
+        done)
+        echo "Sending to prettier: $FILES"
+        [ -z "$FILES" ] || npx prettier --write $FILES
+      stage_fixed: true
+
+    # Lint JavaScript/TypeScript
+    eslint:
+      glob: "*.{js,ts,json}"
+      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || npx eslint --fix $FILES
+      stage_fixed: true
+
+    # Lint CSS
+    stylelint:
+      glob: "*.css"
+      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || npx stylelint --fix $FILES
+      stage_fixed: true
+
+    # Format and lint Python (if Python files exist)
+    ruff-format:
+      glob: "*.py"
+      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || uv run ruff format $FILES
+      stage_fixed: true
+
+    ruff-check:
+      glob: "*.py"
+      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || uv run ruff check --fix $FILES
+      stage_fixed: true
+
+    # Check for dead/unused code in Python
+    vulture:
+      glob: "*.py"
+      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || uv run vulture $FILES
+      stage_fixed: false # vulture only reports, doesn't fix
+
+    # Upgrade Django code patterns (only for Django projects)
+    django-upgrade:
+      glob: "*.py"
+      run: FILES=$(for f in {staged_files}; do [ -f "$f" ] && echo "$f"; done); [ -z "$FILES" ] || uv run django-upgrade --target-version 5.1 $FILES
+      stage_fixed: true

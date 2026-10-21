@@ -1,3 +1,5 @@
+# >>> pedantry
+# pedantry 2.0.0: managed by pedantry sync, do not edit.
 # Dependencies
 node_modules
 
@@ -34,3 +36,11 @@ coverage
 .env
 .env.local
 *.backup.*
+
+# Written by pedantry sync
+.pedantry
+lefthook.yml
+# <<< pedantry
+
+# Repo-specific
+tests/npm-consumer/fixture/
