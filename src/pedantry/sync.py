@@ -69,7 +69,7 @@ def resolve_pin(
     pin = load_pin(root)
     source = pin_source(root)
     if pin is None or source is None:
-        if not types:
+        if types is None:
             raise PedantryError(
                 "no pedantry pin found: pass --type (e.g. --type python) to set one "
                 "up, "
@@ -130,15 +130,28 @@ def npm_pin_command(root: Path, version: str) -> list[str] | None:
     return None
 
 
-def run_npm_pin(root: Path, command: list[str]) -> str | None:
-    """Run the npm bump; the note to show when npm is not installed, else None."""
+def run_npm(root: Path, command: list[str]) -> str | None:
+    """Run an npm command; the note to show when it cannot run or fails, else None.
+
+    A failure (typically the pedantry tag does not exist yet, or the network is
+    down) is reported, not raised: the files that were written are still right.
+    """
+    line = " ".join(command)
     if shutil.which("npm") is None:
-        return (
-            f"npm is not installed, so {NPM_PACKAGE} was not bumped. Run: "
-            + " ".join(command)
-        )
-    subprocess.run(command, cwd=root, check=True)
-    return None
+        return f"npm is not installed, so {NPM_PACKAGE} was not bumped. Run: {line}"
+    result = subprocess.run(
+        command, cwd=root, check=False, capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        return None
+    detail = "\n".join(
+        f"    {text}" for text in result.stderr.strip().splitlines()[-6:]
+    )
+    return (
+        f"`{line}` failed (exit {result.returncode}), so {NPM_PACKAGE} was not "
+        "installed or bumped. If the tag does not exist yet, run the command "
+        "again once it does:\n" + detail
+    )
 
 
 def _validate_pyproject(text: str) -> None:

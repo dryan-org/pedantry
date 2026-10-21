@@ -105,6 +105,16 @@ Moves a repo that uses the old `.pedantry` git submodule and copied files. It ne
 6. Initializes the old submodule first (`git submodule update --init .pedantry`) if it is not checked out, so the result does not depend on checkout state. Without network it says so and carries on.
 7. Prints a report: what it replaced (identical to pedantry, or a stale copy of an older pedantry), what it **preserved** (per-repo edits), and what needs a human.
 
+If `npm install` fails (typically because the `vX.Y.Z` tag does not exist yet), migrate and `sync --upgrade` say so, show npm's last lines, and carry on: every file is still written, and the report tells you the command to run again. A repo with no Python, TypeScript, JavaScript or CSS tooling files (an Xcode project, say) is pinned with `types = []`, so only the editor, Prettier, hook and agent files are managed.
+
+Other things migrate does so the result stays working:
+
+- Drops `--config .pedantry/stylelint.config.mjs` from `package.json` scripts (Stylelint finds `stylelint.config.*` itself) and writes a one-line `stylelint.config.mjs` when the repo has none.
+- Removes a `.pedantry/lefthook.yml` entry from an `extends:` list, and a trailing comment after a `.pedantry` ignore entry. An ESLint `ignores` array that fits on one line after the removal is collapsed, as Prettier would.
+- Leaves `package.json` without a `"prettier"` key when the repo has its own Prettier config file (`.prettierrc.json`, `prettier.config.js`, ...): Prettier reads that key first, so adding it would replace the repo's options.
+- Keeps tsc as strict as before: an old copy of the tsconfig that lacked `strict`, `noUnusedLocals`, `noUnusedParameters`, `noImplicitReturns`, `noFallthroughCasesInSwitch`, `noUncheckedIndexedAccess` or `noPropertyAccessFromIndexSignature` gets that option set to `false` (reported under preserved; delete the line to adopt pedantry's setting).
+- Lists every other file that still names a `.pedantry/<file>` that no longer exists (a dynamic ESLint import, docs, scripts) with the replacement to use.
+
 The report also flags: a repo that never had `[tool.ruff]` (the managed ruleset is new; run `ruff check --statistics`), `AGENTS.md` lines that still say "submodule", dangling symlinks into the old submodule (removed, nothing to restore), TypeScript 7, and symlinks that became regular files. Git sees that last change as a typechange, and `infra gh commit` before infra-core 1.2.2 keeps mode 120000 for it, so commit in two steps (delete the symlinks, then add the files); 1.2.2 and later handles it in one.
 
 What "preserved" means: hooks that differ from pedantry's move to `lefthook-local.yml`; editor and ignore rules go after the managed block; a `pyproject.toml` table you changed stays where it is and is listed under `keep` in `[tool.pedantry]`; tsconfig options that differ stay in the repo's `tsconfig.json`. Use `--dry-run` to see the plan first.
