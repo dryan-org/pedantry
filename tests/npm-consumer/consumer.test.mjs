@@ -179,3 +179,73 @@ describe("@dryan/pedantry/eslint on TypeScript 7", () => {
     assert.doesNotMatch(output, /src\/ts\.ts/);
   });
 });
+
+describe("@dryan/pedantry/prettier in a CommonJS consumer", () => {
+  const consumerCjs = join(work, "consumer-cjs");
+
+  before(() => {
+    mkdirSync(consumerCjs, { recursive: true });
+    writeFileSync(
+      join(consumerCjs, "package.json"),
+      JSON.stringify(
+        {
+          name: "cjs-consumer",
+          version: "1.0.0",
+          private: true,
+          prettier: "@dryan/pedantry/prettier",
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    writeFileSync(
+      join(consumerCjs, "config.cjs"),
+      'module.exports = require("@dryan/pedantry/prettier");\n',
+    );
+    writeFileSync(join(consumerCjs, "a.json"), '{ "a": 1 }\n');
+    const packed = readdirSync(work).find((name) => name.endsWith(".tgz"));
+    run(
+      "npm",
+      [
+        "install",
+        "--no-audit",
+        "--no-fund",
+        "--ignore-scripts",
+        join(work, packed),
+        "prettier",
+      ],
+      { cwd: consumerCjs },
+    );
+  });
+
+  it("require() returns the plain config, not an ES module namespace", () => {
+    const output = run(
+      "node",
+      ["-e", "console.log(JSON.stringify(require('./config.cjs')))"],
+      { cwd: consumerCjs },
+    );
+    assert.equal(output.trim(), "{}");
+  });
+
+  it("is accepted by Prettier without an unknown-option warning", () => {
+    const output = run("npx", ["prettier", "--check", "a.json"], {
+      cwd: consumerCjs,
+      allowFailure: true,
+    });
+    assert.doesNotMatch(output, /unknown option|__esModule/i);
+    assert.match(output, /All matched files use Prettier code style/);
+  });
+
+  it("still loads as an ES module for ESM consumers", () => {
+    const output = run(
+      "node",
+      [
+        "--input-type=module",
+        "-e",
+        "import c from '@dryan/pedantry/prettier'; console.log(JSON.stringify(c))",
+      ],
+      { cwd: consumerCjs },
+    );
+    assert.equal(output.trim(), "{}");
+  });
+});

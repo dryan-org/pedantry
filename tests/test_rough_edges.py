@@ -46,7 +46,13 @@ def test_the_eslint_hook_skips_typescript_files_on_typescript_7(
     spec: str, scoped: bool, make_repo: MAKE, pedantry: CLI
 ) -> None:
     package = {"name": "d", "devDependencies": {"typescript": spec}}
-    root = make_repo({"package.json": json.dumps(package), "a.ts": "export {};\n"})
+    root = make_repo(
+        {
+            "package.json": json.dumps(package),
+            "a.ts": "export {};\n",
+            "eslint.config.ts": "export default [];\n",
+        }
+    )
 
     assert pedantry("sync", "--path", str(root), "--type", "typescript").exit_code == 0
 
@@ -74,7 +80,13 @@ def test_migrate_does_not_flag_the_eslint_hook_as_a_repo_edit_on_typescript_7(
     make_repo: MAKE, pedantry: CLI
 ) -> None:
     package = {"name": "d", "devDependencies": {"typescript": "~7.0.0"}}
-    root = make_repo({"package.json": json.dumps(package), "a.ts": "export {};\n"})
+    root = make_repo(
+        {
+            "package.json": json.dumps(package),
+            "a.ts": "export {};\n",
+            "eslint.config.ts": "export default [];\n",
+        }
+    )
     pedantry("sync", "--path", str(root), "--type", "typescript")
 
     result = migrate(pedantry, root)
@@ -594,3 +606,43 @@ def test_no_typechange_warning_without_symlinks(make_repo: MAKE, pedantry: CLI) 
     result = migrate(pedantry, root, "--type", "python")
 
     assert "typechange" not in result.output
+
+
+# ------------------------------------------ 7. submodule removal is fully staged
+
+
+def real_submodule_repo(make_repo: MAKE, tmp_path: Path) -> Path:
+    """A committed repo with .pedantry as a real submodule (not a faked gitlink)."""
+    env = ("-c", "protocol.file.allow=always", "-c", "user.name=t", "-c")
+    ident = ("user.email=t@t", "-c", "commit.gpgsign=false")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    git(sub, "init", "-q")
+    (sub / "README.md").write_text("old pedantry\n")
+    git(sub, "add", ".")
+    git(sub, *env, *ident, "commit", "-qm", "init")
+    root = make_repo({"pyproject.toml": PYPROJECT, "AGENTS.md": "# Demo\n"})
+    git(root, "init", "-q")
+    git(root, "add", ".")
+    git(root, *env, *ident, "commit", "-qm", "init")
+    git(root, *env, *ident, "submodule", "add", "-q", str(sub), ".pedantry")
+    git(root, *env, *ident, "commit", "-qm", "add submodule")
+    return root
+
+
+def test_migrate_stages_the_submodule_removal_completely(
+    make_repo: MAKE, pedantry: CLI, tmp_path: Path
+) -> None:
+    root = real_submodule_repo(make_repo, tmp_path)
+
+    result = migrate(pedantry, root, "--type", "python")
+
+    assert result.exit_code == 0, result.output
+    status = git(root, "status", "--porcelain").splitlines()
+    # The gitlink deletion and .gitmodules removal are staged.
+    assert "D  .pedantry" in status
+    assert "D  .gitmodules" in status
+    assert (root / ".pedantry" / "AGENTS.md").is_file()
+    # Everything migrate wrote is staged too: no `git add -A` needed.
+    assert git(root, "ls-files", "--", ".pedantry").strip() == ".pedantry/AGENTS.md"
+    assert not [line for line in status if line.startswith(("??", " M", " D"))]

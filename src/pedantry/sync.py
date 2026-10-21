@@ -1,6 +1,9 @@
 """Compute, apply and verify the files pedantry manages."""
 
 import difflib
+import json
+import shutil
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -15,6 +18,7 @@ from pedantry.config import (
 )
 from pedantry.content import (
     detect_layout,
+    detect_tools,
     editorconfig_block,
     prettierignore_block,
     render_agents,
@@ -93,6 +97,50 @@ def resolve_pin(
     return ResolvedPin(pin, source)
 
 
+NPM_PACKAGE = "@dryan/pedantry"
+
+
+def npm_pin_command(root: Path, version: str) -> list[str] | None:
+    """The npm command that moves ``@dryan/pedantry`` to ``version``, if it needs one.
+
+    None when package.json does not list the package or already points at the tag.
+    """
+    text = read_text(root / "package.json")
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("devDependencies", "dependencies"):
+        group = data.get(key)
+        spec = group.get(NPM_PACKAGE) if isinstance(group, dict) else None
+        if isinstance(spec, str):
+            if spec.endswith(f"#v{version}"):
+                return None
+            flag = "--save-dev" if key == "devDependencies" else "--save"
+            return [
+                "npm",
+                "install",
+                flag,
+                f"github:dryan-org/pedantry#v{version}",
+            ]
+    return None
+
+
+def run_npm_pin(root: Path, command: list[str]) -> str | None:
+    """Run the npm bump; the note to show when npm is not installed, else None."""
+    if shutil.which("npm") is None:
+        return (
+            f"npm is not installed, so {NPM_PACKAGE} was not bumped. Run: "
+            + " ".join(command)
+        )
+    subprocess.run(command, cwd=root, check=True)
+    return None
+
+
 def _validate_pyproject(text: str) -> None:
     try:
         tomllib.loads(text)
@@ -160,7 +208,10 @@ def compute(
     )
     for path, text in {
         "lefthook.yml": render_lefthook(
-            pin.version, types, typescript_major(read("package.json"))
+            pin.version,
+            types,
+            typescript_major(read("package.json")),
+            detect_tools(read),
         ),
         ".pedantry/AGENTS.md": render_agents(pin.version),
     }.items():

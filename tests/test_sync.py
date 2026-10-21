@@ -11,19 +11,35 @@ CLI = Callable[..., Result]
 
 PYPROJECT = '[project]\nname = "demo"\nversion = "0.1.0"\n'
 PACKAGE = '{\n  "name": "demo",\n  "private": true\n}\n'
+ESLINT = {"eslint.config.ts": "export default [];\n"}
+STYLELINT = {"stylelint.config.mjs": "export default {};\n"}
+VULTURE_DEP = PYPROJECT + '\n[dependency-groups]\ndev = ["vulture>=2.13"]\n'
 
 # type -> (files the fixture repo starts with, hooks expected, pyproject block?)
 CASES: dict[str, tuple[dict[str, str], set[str], bool]] = {
-    "python": ({"pyproject.toml": PYPROJECT}, {"ruff-check", "vulture"}, True),
+    "python": ({"pyproject.toml": VULTURE_DEP}, {"ruff-check", "vulture"}, True),
     "typescript": (
-        {"package.json": PACKAGE, "tsconfig.json": "{}\n", "src/a.ts": "export {};\n"},
+        {
+            "package.json": PACKAGE,
+            "tsconfig.json": "{}\n",
+            "src/a.ts": "export {};\n",
+            **ESLINT,
+        },
         {"eslint"},
         False,
     ),
-    "javascript": ({"package.json": PACKAGE, "a.js": "\n"}, {"eslint"}, False),
-    "css": ({"package.json": PACKAGE, "a.css": "a {}\n"}, {"stylelint"}, False),
+    "javascript": (
+        {"package.json": PACKAGE, "a.js": "\n", **ESLINT},
+        {"eslint"},
+        False,
+    ),
+    "css": (
+        {"package.json": PACKAGE, "a.css": "a {}\n", **STYLELINT},
+        {"stylelint"},
+        False,
+    ),
     "django": (
-        {"pyproject.toml": PYPROJECT, "manage.py": "\n"},
+        {"pyproject.toml": VULTURE_DEP, "manage.py": "\n", **ESLINT, **STYLELINT},
         {"ruff-check", "vulture", "django-upgrade", "eslint", "stylelint"},
         True,
     ),
@@ -281,7 +297,7 @@ def test_unknown_type_in_the_pin_is_an_error(
 
 
 def test_type_option_updates_the_pin(make_repo: MAKE, pedantry: CLI) -> None:
-    root = make_repo({"pyproject.toml": PYPROJECT})
+    root = make_repo({"pyproject.toml": PYPROJECT, **STYLELINT})
     pedantry("sync", "--path", str(root), "--type", "python")
 
     pedantry("sync", "--path", str(root), "--type", "python", "--type", "css")

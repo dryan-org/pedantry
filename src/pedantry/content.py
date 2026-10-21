@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from importlib.resources import files
 from typing import TYPE_CHECKING
 
-from pedantry.blocks import wrap_block
+from pedantry.blocks import without_block, wrap_block
 from pedantry.model import MANAGED_PHRASE, ProjectType, effective
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 # ------------------------------------------------------------------ stamps
@@ -154,17 +155,136 @@ def typescript_major(package_json: str | None) -> int | None:
     return None
 
 
+ESLINT_CONFIGS = (
+    "eslint.config.ts",
+    "eslint.config.mts",
+    "eslint.config.cts",
+    "eslint.config.js",
+    "eslint.config.mjs",
+    "eslint.config.cjs",
+)
+STYLELINT_CONFIGS = (
+    "stylelint.config.js",
+    "stylelint.config.mjs",
+    "stylelint.config.cjs",
+    "stylelint.config.ts",
+    "stylelint.config.mts",
+    "stylelint.config.cts",
+    ".stylelintrc",
+    ".stylelintrc.json",
+    ".stylelintrc.yml",
+    ".stylelintrc.yaml",
+    ".stylelintrc.js",
+    ".stylelintrc.cjs",
+    ".stylelintrc.mjs",
+)
+_VULTURE_DEP = re.compile(r"vulture(?![\w.-])")
+
+
+def _package_json(text: str | None) -> dict[str, object]:
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _requirement_lists(data: dict[str, object]) -> list[list[object]]:
+    """Every list of requirement strings a pyproject.toml declares."""
+    found: list[list[object]] = []
+    project = data.get("project")
+    if isinstance(project, dict):
+        deps = project.get("dependencies")
+        if isinstance(deps, list):
+            found.append(deps)
+        extras = project.get("optional-dependencies")
+        if isinstance(extras, dict):
+            found += [v for v in extras.values() if isinstance(v, list)]
+    groups = data.get("dependency-groups")
+    if isinstance(groups, dict):
+        found += [v for v in groups.values() if isinstance(v, list)]
+    tool = data.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    legacy = uv.get("dev-dependencies") if isinstance(uv, dict) else None
+    if isinstance(legacy, list):
+        found.append(legacy)
+    return found
+
+
+def detect_tools(read: Callable[[str], str | None]) -> frozenset[str]:
+    """Which optional tools the repo has set up: ``eslint``, ``stylelint``, ``vulture``.
+
+    A hook for a tool the repo lacks only fails every commit, so sync leaves it
+    out. ESLint and Stylelint count once they have a config file (or a
+    package.json key); vulture once it is a dependency or has a ``[tool.vulture]``
+    table outside the managed block (the block's own table proves nothing).
+    """
+    tools: set[str] = set()
+    package = _package_json(read("package.json"))
+    if (
+        any(read(name) is not None for name in ESLINT_CONFIGS)
+        or "eslintConfig" in package
+    ):
+        tools.add("eslint")
+    if (
+        any(read(name) is not None for name in STYLELINT_CONFIGS)
+        or "stylelint" in package
+    ):
+        tools.add("stylelint")
+    pyproject = read("pyproject.toml")
+    if pyproject:
+        try:
+            data = tomllib.loads(without_block(pyproject))
+        except tomllib.TOMLDecodeError:
+            data = {}
+        tool = data.get("tool")
+        if (isinstance(tool, dict) and "vulture" in tool) or any(
+            isinstance(req, str) and _VULTURE_DEP.match(req.strip().lower())
+            for reqs in _requirement_lists(data)
+            for req in reqs
+        ):
+            tools.add("vulture")
+    return frozenset(tools)
+
+
+_TOOL_HINTS = {
+    "eslint": "no ESLint config file found",
+    "stylelint": "no Stylelint config file found",
+    "vulture": "vulture is not a dependency and there is no [tool.vulture] table "
+    "outside the managed block",
+}
+
+
+def skipped_hooks(
+    types: frozenset[ProjectType], tools: frozenset[str]
+) -> list[tuple[str, str]]:
+    """(hook name, reason) for each hook the types call for but the repo lacks."""
+    wanted = {name for name, _ in lefthook_commands(types)}
+    present = {name for name, _ in lefthook_commands(types, tools=tools)}
+    return [(name, _TOOL_HINTS[name]) for name in sorted(wanted - present)]
+
+
 def lefthook_commands(
-    types: frozenset[ProjectType], ts_major: int | None = None
+    types: frozenset[ProjectType],
+    ts_major: int | None = None,
+    tools: frozenset[str] | None = None,
 ) -> list[tuple[str, str]]:
     """(command name, YAML text) for each pre-commit hook the types need.
 
     ``ts_major`` is the TypeScript major the repo uses: typescript-eslint cannot
     run on 7 or later, so the eslint hook then covers JavaScript and JSON only.
+    ``tools`` is what :func:`detect_tools` found: eslint, stylelint and vulture
+    hooks appear only for tools in it (``None`` means all of them).
     """
     kinds = effective(types)
+
+    def has(tool: str) -> bool:
+        return tools is None or tool in tools
+
     commands = [("prettier", _PRETTIER)]
-    if kinds & {ProjectType.TYPESCRIPT, ProjectType.JAVASCRIPT}:
+    if kinds & {ProjectType.TYPESCRIPT, ProjectType.JAVASCRIPT} and has("eslint"):
         no_ts = ts_major is not None and ts_major >= 7
         commands.append(
             (
@@ -182,7 +302,7 @@ def lefthook_commands(
                 ),
             )
         )
-    if ProjectType.CSS in kinds:
+    if ProjectType.CSS in kinds and has("stylelint"):
         commands.append(
             (
                 "stylelint",
@@ -214,17 +334,20 @@ def lefthook_commands(
                     glob="*.py",
                 ),
             ),
-            (
-                "vulture",
-                _staged(
-                    "uv run vulture",
-                    fix=False,
-                    comment="Find dead Python code",
-                    name="vulture",
-                    glob="*.py",
-                ),
-            ),
         ]
+        if has("vulture"):
+            commands.append(
+                (
+                    "vulture",
+                    _staged(
+                        "uv run vulture",
+                        fix=False,
+                        comment="Find dead Python code",
+                        name="vulture",
+                        glob="*.py",
+                    ),
+                )
+            )
     if ProjectType.DJANGO in kinds:
         commands.append(
             (
@@ -244,13 +367,16 @@ DJANGO_TARGET = "5.1"
 
 
 def render_lefthook(
-    version: str, types: frozenset[ProjectType], ts_major: int | None = None
+    version: str,
+    types: frozenset[ProjectType],
+    ts_major: int | None = None,
+    tools: frozenset[str] | None = None,
 ) -> str:
     header = (
         f"# {stamp(version)}\n"
         "# Repo-specific hooks go in lefthook-local.yml, which lefthook merges in.\n"
     )
-    body = "\n".join(text for _, text in lefthook_commands(types, ts_major))
+    body = "\n".join(text for _, text in lefthook_commands(types, ts_major, tools))
     return f"{header}pre-commit:\n  parallel: false\n  commands:\n{body}"
 
 
