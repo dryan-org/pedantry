@@ -16,7 +16,7 @@ from pedantry.sync import (
     diff,
     npm_pin_command,
     resolve_pin,
-    run_npm_pin,
+    run_npm,
 )
 
 app = typer.Typer(
@@ -85,7 +85,7 @@ def sync(
     npm_command = npm_pin_command(root, resolved.pin.version) if upgrade else None
     npm_note = None
     if npm_command and not dry_run:
-        npm_note = run_npm_pin(root, npm_command)
+        npm_note = run_npm(root, npm_command)
 
     if as_json:
         typer.echo(

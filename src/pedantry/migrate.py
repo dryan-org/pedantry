@@ -19,6 +19,7 @@ from pedantry.content import (
     PRETTIERIGNORE_BODY,
     PYTHON_TABLES,
     RETIRED_TABLES,
+    STYLELINT_CONFIGS,
     data_file,
     detect_layout,
     detect_tools,
@@ -27,6 +28,7 @@ from pedantry.content import (
     skipped_hooks,
     table_value,
     typescript_major,
+    vendored_files,
 )
 from pedantry.formats import (
     TomlSection,
@@ -40,7 +42,6 @@ from pedantry.formats import (
 from pedantry.model import (
     BLOCK_BEGIN,
     BLOCK_END,
-    PedantryError,
     Pin,
     ProjectType,
     effective,
@@ -52,12 +53,57 @@ from pedantry.sync import (
     compute,
     npm_pin_command,
     resolve_pin,
+    run_npm,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 IMPORT_LINE = "@.pedantry/AGENTS.md"
+PRETTIER_CONFIGS = (
+    ".prettierrc",
+    ".prettierrc.json",
+    ".prettierrc.yml",
+    ".prettierrc.yaml",
+    ".prettierrc.toml",
+    ".prettierrc.js",
+    ".prettierrc.cjs",
+    ".prettierrc.mjs",
+    ".prettierrc.ts",
+    ".prettierrc.cts",
+    ".prettierrc.mts",
+    "prettier.config.js",
+    "prettier.config.cjs",
+    "prettier.config.mjs",
+    "prettier.config.ts",
+    "prettier.config.cts",
+    "prettier.config.mts",
+)
+# A symlink to one of these in the old submodule was the whole config, so the
+# thin call into the matching npm export replaces it.
+HELPER_CONFIGS = {
+    "stylelint.config.mjs": (
+        'export default { extends: ["@dryan/pedantry/stylelint"] };\n'
+    ),
+    "vitest.config.ts": (
+        'import { defineConfig } from "vitest/config";\n'
+        'import { vitestConfig } from "@dryan/pedantry/vitest";\n\n'
+        "export default defineConfig(vitestConfig());\n"
+    ),
+    "rollup.config.js": (
+        'import { rollupConfig } from "@dryan/pedantry/rollup";\n\n'
+        "export default rollupConfig();\n"
+    ),
+    "web-test-runner.config.js": (
+        'import { webTestRunnerConfig } from "@dryan/pedantry/web-test-runner";\n\n'
+        "export default await webTestRunnerConfig();\n"
+    ),
+    "custom-elements-manifest.config.js": (
+        "import { customElementsManifestConfig } from "
+        '"@dryan/pedantry/custom-elements-manifest";\n\n'
+        "export default customElementsManifestConfig();\n"
+    ),
+}
 COPIED_CONFIGS = (
     "stylelint.config.mjs",
     "rollup.config.js",
@@ -347,7 +393,9 @@ def migrate_lefthook(
         for line in parsed.hook_options
         if line.strip() and line.strip() != "parallel: false"
     ]
-    other = [line for line in parsed.other if line.strip()]
+    other = _drop_pedantry_extends(
+        [line for line in parsed.other if line.strip()], report
+    )
     if all(line.lstrip().startswith("#") for line in other):
         other = []  # only the stamp and header comments of a lefthook.yml v2 wrote
     if extra_options:
@@ -372,6 +420,36 @@ def migrate_lefthook(
             parts += extra_commands
     parts += other
     return "\n".join(parts).rstrip() + "\n"
+
+
+def _drop_pedantry_extends(lines: list[str], report: Report) -> list[str]:
+    """Remove ``.pedantry/lefthook.yml`` from an ``extends:`` list: it is gone.
+
+    lefthook.yml is now the generated file itself, so extending the old copy
+    would point at a path that does not exist.
+    """
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.strip() != "extends:":
+            result.append(line)
+            index += 1
+            continue
+        items: list[str] = []
+        index += 1
+        while index < len(lines) and lines[index].lstrip().startswith("-"):
+            items.append(lines[index])
+            index += 1
+        kept = [item for item in items if ".pedantry/" not in item]
+        if len(kept) != len(items):
+            report.replaced.append(
+                "lefthook.yml: `extends` of .pedantry/lefthook.yml (the generated "
+                "lefthook.yml replaces it)"
+            )
+        if kept:
+            result += [line, *kept]
+    return result
 
 
 # ------------------------------------------------------------ editorconfig
@@ -448,6 +526,20 @@ def migrate_prettierignore(root: Path, report: Report) -> str | None:
 # ---------------------------------------------------------------- tsconfig
 
 
+# Options that make tsc report new errors on code that passed without them. An old
+# copy of the pedantry tsconfig that lacked one is migrated with it switched off,
+# so migrating changes where the config comes from, not what it enforces.
+STRICT_CHECKS = (
+    "strict",
+    "noUnusedLocals",
+    "noUnusedParameters",
+    "noImplicitReturns",
+    "noFallthroughCasesInSwitch",
+    "noUncheckedIndexedAccess",
+    "noPropertyAccessFromIndexSignature",
+)
+
+
 def migrate_tsconfig(root: Path, vendor: bool, report: Report) -> str | None:
     text = read_text(root / "tsconfig.json")
     if text is None:
@@ -492,7 +584,16 @@ def migrate_tsconfig(root: Path, vendor: bool, report: Report) -> str | None:
             f"tsconfig.json: compilerOptions {', '.join(stale)} (stale copy)"
         )
     inherited = [key for key in shared if key not in options]
-    if inherited:
+    for key in STRICT_CHECKS if current is None else ():
+        if key in inherited and shared.get(key) is True:
+            kept_options[key] = False
+            inherited.remove(key)
+            report.preserved.append(
+                f"tsconfig.json: compilerOptions.{key} set to false (this repo's "
+                "copy lacked it, so tsc never checked it; delete the line to adopt "
+                "pedantry's setting)"
+            )
+    if inherited and current is None:
         report.manual.append(
             "tsconfig.json: now also inherits "
             + ", ".join(inherited)
@@ -518,11 +619,44 @@ _ESLINT_IMPORT = re.compile(
 _PEDANTRY_ITEM = r"""(["'])(?:\*\*/|\./)?\.pedantry(?:/\*{0,2})?\1"""
 # An ignore entry, with the comma that separates it from its neighbour.
 _ESLINT_IGNORE_LAST = re.compile(rf",\s*{_PEDANTRY_ITEM}(?=\s*\])")
-_ESLINT_IGNORE = re.compile(rf"[ \t]*{_PEDANTRY_ITEM},?[ \t]*\n?")
+# A trailing line comment goes with the entry it describes.
+_ESLINT_IGNORE = re.compile(rf"[ \t]*{_PEDANTRY_ITEM},?[ \t]*(?://[^\n]*)?\n?")
 
 
 def _is_pedantry_path(item: str) -> bool:
     return re.fullmatch(r"(\*\*/|\./)?\.pedantry(/\*{0,2})?", item) is not None
+
+
+_STRING = r"""(?:"[^"\n\\]*"|'[^'\n\\]*')"""
+_STRING_ARRAY = re.compile(rf"\[\s*{_STRING}(?:\s*,\s*{_STRING})*\s*,?\s*\]")
+PRETTIER_WIDTH = 80
+
+
+def _drop_from_string_arrays(text: str) -> str:
+    """Remove ``.pedantry`` entries from arrays of plain strings (Prettier layout).
+
+    Prettier collapses an array onto one line when it fits, so deleting a line
+    from a multi-line array would leave a file that ``prettier --check`` flags.
+    """
+
+    def rewrite(match: re.Match[str]) -> str:
+        items = re.findall(_STRING, match.group())
+        kept = [item for item in items if not _is_pedantry_path(item[1:-1])]
+        if len(kept) == len(items):
+            return match.group()
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.end())
+        line_end = len(text) if line_end == -1 else line_end
+        before = text[line_start : match.start()]
+        after = text[match.end() : line_end]
+        inline = "[" + ", ".join(kept) + "]"
+        if len(before) + len(inline) + len(after) <= PRETTIER_WIDTH:
+            return inline
+        indent = before[: len(before) - len(before.lstrip())]
+        pad = indent + "  "
+        return "[\n" + "".join(f"{pad}{item},\n" for item in kept) + indent + "]"
+
+    return _STRING_ARRAY.sub(rewrite, text)
 
 
 def migrate_eslint(root: Path, vendor: bool, report: Report) -> dict[str, str]:
@@ -545,7 +679,8 @@ def migrate_eslint(root: Path, vendor: bool, report: Report) -> dict[str, str]:
                 "a file that imports `@dryan/pedantry/eslint` and keep only your own "
                 "rules"
             )
-        stripped = _ESLINT_IGNORE.sub("", _ESLINT_IGNORE_LAST.sub("", new))
+        stripped = _drop_from_string_arrays(new)
+        stripped = _ESLINT_IGNORE.sub("", _ESLINT_IGNORE_LAST.sub("", stripped))
         if stripped != new:
             report.actions.append(f"{name}: dropped `.pedantry` from ignores")
             new = stripped
@@ -554,11 +689,140 @@ def migrate_eslint(root: Path, vendor: bool, report: Report) -> dict[str, str]:
     return edits
 
 
+# ------------------------------------------------------ stale .pedantry paths
+
+_STYLELINT_FLAG = re.compile(
+    r"\s+--config(?:=|\s+)(?:\./)?\.pedantry/stylelint\.config\.mjs"
+)
+_PEDANTRY_REF = re.compile(r"(?<![\w@./-])(?:\./)?\.pedantry/([A-Za-z0-9_][\w./-]*)")
+_SKIP_REF_FILES = re.compile(
+    r"(^|/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|"
+    r"uv\.lock|poetry\.lock|\.gitmodules|\.gitignore|\.npmignore)$"
+)
+_REPLACEMENTS = (
+    (re.compile(r"eslint\.config\.\w+$"), "import `@dryan/pedantry/eslint`"),
+    (re.compile(r"stylelint\.config\.\w+$"), "extend `@dryan/pedantry/stylelint`"),
+    (re.compile(r"tsconfig[\w.]*\.json$"), 'extend "@dryan/pedantry/tsconfig"'),
+    (re.compile(r"\.prettierrc"), 'use "@dryan/pedantry/prettier"'),
+    (re.compile(r"vitest\.config"), "import `@dryan/pedantry/vitest`"),
+    (re.compile(r"rollup\.config"), "import `@dryan/pedantry/rollup`"),
+    (
+        re.compile(r"web-test-runner\.config"),
+        "import `@dryan/pedantry/web-test-runner`",
+    ),
+    (
+        re.compile(r"custom-elements-manifest\.config"),
+        "import `@dryan/pedantry/custom-elements-manifest`",
+    ),
+)
+MAX_SCANNED_BYTES = 1_000_000
+
+
+def migrate_stylelint_flag(
+    root: Path, package_text: str | None, vendor: bool, report: Report
+) -> tuple[str | None, str | None]:
+    """Drop ``--config .pedantry/stylelint.config.mjs`` from package.json scripts.
+
+    Stylelint finds ``stylelint.config.*`` on its own, so the flag goes and, when
+    the repo has no Stylelint config, a one-line one is written. Returns the new
+    package.json text and the new stylelint.config.mjs text (None when unchanged).
+    """
+    if vendor or package_text is None or not _STYLELINT_FLAG.search(package_text):
+        return None, None
+    new = _STYLELINT_FLAG.sub("", package_text)
+    report.actions.append(
+        "package.json: dropped `--config .pedantry/stylelint.config.mjs` from scripts"
+    )
+    try:
+        data = json.loads(package_text)
+    except json.JSONDecodeError:
+        data = {}
+    has_config = any((root / name).is_file() for name in STYLELINT_CONFIGS) or (
+        isinstance(data, dict) and "stylelint" in data
+    )
+    if has_config:
+        return new, None
+    report.actions.append(
+        'stylelint.config.mjs: created, extending "@dryan/pedantry/stylelint"'
+    )
+    return new, 'export default { extends: ["@dryan/pedantry/stylelint"] };\n'
+
+
+def report_stale_references(
+    root: Path,
+    edits: dict[str, str | None],
+    vendor: bool,
+    types: frozenset[ProjectType],
+    report: Report,
+) -> None:
+    """List the files that still name a ``.pedantry/<file>`` that no longer exists.
+
+    The submodule's files are gone after migrate; only ``.pedantry/AGENTS.md``
+    (and the vendored configs, with ``--vendor``) are written back. Edited files
+    are scanned as they will be written.
+    """
+    alive = {"AGENTS.md"}
+    if vendor:
+        alive |= {
+            name.removeprefix(".pedantry/")
+            for name in vendored_files(__version__, effective(types))
+        }
+    names = set(tracked_files(root, "*"))
+    names |= {path for path, text in edits.items() if text is not None}
+    for path in sorted(names):
+        if path.startswith(".pedantry/") or _SKIP_REF_FILES.search(path):
+            continue
+        if path in edits:
+            text = edits[path]
+        else:
+            target = root / path
+            if (
+                target.is_symlink()
+                or not target.is_file()
+                or target.stat().st_size > MAX_SCANNED_BYTES
+            ):
+                continue
+            try:
+                text = target.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            continue
+        hits: dict[str, list[int]] = {}
+        for number, line in enumerate(text.splitlines(), start=1):
+            for match in _PEDANTRY_REF.finditer(line):
+                name = match.group(1).rstrip(".-")
+                if name in alive:
+                    continue
+                hits.setdefault(name, []).append(number)
+        for name, lines in hits.items():
+            advice = next(
+                (text for pattern, text in _REPLACEMENTS if pattern.search(name)),
+                "point it at the matching `@dryan/pedantry/...` export or remove it",
+            )
+            where = ", ".join(map(str, lines))
+            report.manual.append(
+                f"{path}: line {where} names `.pedantry/{name}`, which no longer "
+                f"exists (the submodule is gone): {advice}"
+            )
+
+
 # ------------------------------------------------------------ package.json
 
 
 def _indent(text: str) -> str | int:
     return "\t" if re.search(r'^\t"', text, re.MULTILINE) else 2
+
+
+def _has_own_prettier_options(root: Path) -> bool:
+    """Whether the repo configures Prettier itself (a config file or a package key)."""
+    if any((root / name).is_file() for name in PRETTIER_CONFIGS):
+        return True
+    try:
+        data = json.loads(read_text(root / "package.json") or "{}")
+    except json.JSONDecodeError:
+        return False
+    return isinstance(data, dict) and "prettier" in data
 
 
 def migrate_package_json(
@@ -595,6 +859,19 @@ def migrate_package_json(
             ".prettierrc.json5 sets options, but pedantry's Prettier config is the "
             "defaults. "
             'Review it before using `"prettier": "@dryan/pedantry/prettier"`'
+        )
+        return None, False
+    others = [name for name in PRETTIER_CONFIGS if (root / name).is_file()]
+    if others:
+        # Prettier reads the package.json key before any config file, and the
+        # empty .prettierrc.json5 shadows prettier.config.*, so changing either
+        # would change which options apply.
+        report.manual.append(
+            f"{others[0]} also configures Prettier, so .prettierrc.json5 (the old "
+            'empty default) stays and no "prettier" key was added to package.json: '
+            "Prettier's options here are unchanged. To adopt pedantry's, delete "
+            f'both files and set "prettier": "@dryan/pedantry/prettier" in '
+            "package.json"
         )
         return None, False
     if "prettier" in data:
@@ -683,7 +960,11 @@ def plan_migrate(
     existing = load_pin(root)
     chosen = types or (existing.types if existing else infer_types(root))
     if not chosen:
-        raise PedantryError("could not infer the project types: pass --type")
+        report.actions.append(
+            "no project types detected (no Python, TypeScript, JavaScript or CSS "
+            "tooling files): pinned with types = [], so only the editor, Prettier, "
+            "hook and agent files are managed. Pass --type to add one"
+        )
     kinds = effective(frozenset(chosen))
     vendor = vendor or bool(existing and existing.vendor)
 
@@ -728,6 +1009,16 @@ def plan_migrate(
     if ignore is not None:
         overlay[".prettierignore"] = ignore
 
+    package, drop_rc = migrate_package_json(root, vendor, report)
+    flagless, stylelint = migrate_stylelint_flag(
+        root, package or read_text(root / "package.json"), vendor, report
+    )
+    package = flagless if flagless is not None else package
+    if package is not None:
+        overlay["package.json"] = package
+    if stylelint is not None:
+        overlay["stylelint.config.mjs"] = stylelint
+
     def reader(path: str) -> str | None:
         return overlay[path] if path in overlay else read_text(root / path)
 
@@ -763,20 +1054,35 @@ def plan_migrate(
     tsconfig = migrate_tsconfig(root, vendor, report)
     if tsconfig is not None:
         edits["tsconfig.json"] = tsconfig
-    package, drop_rc = migrate_package_json(root, vendor, report)
-    if package is not None:
-        edits["package.json"] = package
     if drop_rc:
         edits[".prettierrc.json5"] = None
     edits["AGENTS.md"] = migrate_agents(root, report)
     claude = migrate_claude(root, report)
     if claude is not None:
         edits["CLAUDE.md"] = claude
+    wrapped = [
+        name
+        for name in symlinks
+        if name in HELPER_CONFIGS and not vendor and (root / name).exists()
+    ]
+    for name in wrapped:
+        edits[name] = HELPER_CONFIGS[name]
+        report.replaced.append(
+            f"{name}: symlink to the old pedantry config; now calls the matching "
+            "`@dryan/pedantry/...` helper with its defaults"
+        )
+    if wrapped and _has_own_prettier_options(root):
+        report.manual.append(
+            f"{', '.join(wrapped)}: written in Prettier's default style, but this "
+            "repo sets its own Prettier options. Run `npx prettier --write "
+            f"{' '.join(wrapped)}`"
+        )
     report_symlinks(root, symlinks, edits, report)
     report_typescript(root, report)
+    report_stale_references(root, edits, vendor, frozenset(chosen), report)
 
     for name in COPIED_CONFIGS:
-        if (root / name).is_file():
+        if name not in wrapped and (root / name).is_file():
             report.manual.append(
                 f"{name}: left alone. If it is a copy of the old pedantry config, "
                 "switch it to the matching `@dryan/pedantry/...` export "
@@ -917,27 +1223,43 @@ def execute(root: Path, plan: Plan) -> None:
             link.write_bytes(content)
     if plan.remove_submodule:
         remove_submodule(root)
+    original_package = read_text(root / "package.json")
     if plan.npm_install:
-        subprocess.run(plan.npm_install.split(), cwd=root, check=True)
+        note = run_npm(root, plan.npm_install.split())
+        if note:
+            plan.report.actions = [
+                action
+                for action in plan.report.actions
+                if action != f"ran `{plan.npm_install}`"
+            ]
+            plan.report.manual.append(note)
     for path, text in plan.edits.items():
         target = root / path
         if text is None:
             target.unlink(missing_ok=True)
             continue
-        if path == "package.json" and plan.npm_install:
-            # npm rewrote package.json (the new devDependency): add our key on top.
-            current_text = target.read_text(encoding="utf-8")
-            current = json.loads(current_text)
-            current["prettier"] = json.loads(text)["prettier"]
-            text = (
-                json.dumps(current, indent=_indent(current_text), ensure_ascii=False)
-                + "\n"
-            )
+        if path == "package.json" and original_package and plan.npm_install:
+            text = _merge_package_json(root, original_package, text)
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.is_symlink():
             target.unlink()
         target.write_text(text, encoding="utf-8")
     stage(root, plan)
+
+
+def _merge_package_json(root: Path, original: str, planned: str) -> str:
+    """Apply migrate's package.json changes on top of what npm just wrote.
+
+    npm rewrote the file (the new devDependency), so only the top-level keys that
+    migrate changed (``prettier``, ``scripts``) are carried over.
+    """
+    current_text = (root / "package.json").read_text(encoding="utf-8")
+    current = json.loads(current_text)
+    before = json.loads(original)
+    for key, value in json.loads(planned).items():
+        if before.get(key) != value:
+            current[key] = value
+    return json.dumps(current, indent=_indent(current_text), ensure_ascii=False) + "\n"
 
 
 def stage(root: Path, plan: Plan) -> None:
