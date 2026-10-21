@@ -14,7 +14,7 @@
     "lint:py:fix": "ruff check --fix . && ruff format .",
     "format": "prettier --write .",
     "setup": "lefthook install",
-    "test": "node --test tests/npm-consumer/",
+    "test": "node --test tests/npm-consumer/consumer.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [

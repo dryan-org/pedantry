@@ -13,4 +13,4 @@ Pedantry ships two things from one repo and one tag: the `@dryan/pedantry` npm p
 - **What `sync` writes** is defined in `src/pedantry/content.py`. Changing it changes every consumer on its next version bump, so treat edits as releases.
 - **`pedantry migrate`** recognises stale v1 copies through `src/pedantry/data/legacy.json`, built from git history by `scripts/build_legacy.py`. Do not edit it by hand.
 - **Release:** bump `version` in both `package.json` and `pyproject.toml` (and the `[tool.pedantry]` pin), run `uv run pedantry sync --upgrade`, merge, then tag `vX.Y.Z`.
-- **Checks:** `uv run pytest`, `uv run ruff check .`, `uv run ty check src tests`, `npx eslint .`, `npx tsc --noEmit`, `npx prettier --check .`, `node --test tests/npm-consumer/`.
+- **Checks:** `uv run pytest`, `uv run ruff check .`, `uv run ty check src tests`, `npx eslint .`, `npx tsc --noEmit`, `npx prettier --check .`, `npm test`.
