@@ -1,569 +1,212 @@
 # Pedantry
 
-Opinionated linting and formatting configurations for TypeScript, JavaScript, CSS, HTML, and Python projects. Optimized for Web Components (vanilla and Lit), with support for hybrid Python/JavaScript projects.
+Opinionated linting and formatting configuration for TypeScript, JavaScript, CSS, and Python projects, tuned for Web Components (vanilla and Lit) and hybrid Python/JavaScript repos.
 
-## What's Included
+Pedantry is one repo with one version, delivered two ways:
 
-### JavaScript/TypeScript
+- **The `pedantry` CLI** (Python, run with `uvx`) writes the files no tool can share: `.editorconfig`, `lefthook.yml`, a `.prettierignore` baseline, the ruff/ty/vulture/pytest block in `pyproject.toml`, and the shared agent rules.
+- **The `@dryan/pedantry` npm package** carries the configs that tools import natively: ESLint, TypeScript, Prettier, Stylelint, and helpers for Vitest, Rollup, `@web/test-runner` and the Custom Elements Manifest.
 
-- **ESLint** (flat config) with TypeScript support
-- **Prettier** (defaults only)
-- **TypeScript** configuration with decorators for Web Components
-- Path aliases (`@/*`, `@components/*`, etc.)
-- Web Components and Lit optimizations
+Every repo pins a pedantry version. Upgrading is one edit plus `pedantry sync`, and `pedantry check` fails CI when a repo drifts.
 
-### CSS
+## What it enforces
 
-- **Stylelint** with standard config and property ordering
-- Web Components Shadow DOM support (`:host`, `::slotted`, `::part`)
-- CSS custom properties validation
+| Area                  | Tools                                                                                          |
+| --------------------- | ---------------------------------------------------------------------------------------------- |
+| JavaScript/TypeScript | ESLint (flat config, typescript-eslint, JSON/JSONC), Prettier (defaults only), strict tsconfig |
+| CSS                   | Stylelint (standard + recess order), Shadow DOM aware (`:host`, `::slotted`, `::part`)         |
+| Python                | Ruff (lint and format), ty, Vulture, pytest, django-upgrade (Django only)                      |
+| Git hooks             | Lefthook, running the tools above on staged files                                              |
+| Editor                | EditorConfig                                                                                   |
+| Agents                | Shared rules in `.pedantry/AGENTS.md`                                                          |
 
-### Python
+## Set up a repo
 
-- **Ruff** for linting and formatting (replaces Black, isort, flake8, pyupgrade)
-- **Pyright** for type checking (via `ty` CLI)
-- **Vulture** for dead code detection
-- **django-upgrade** for Django code modernization (Django projects only)
-- **pytest** configuration
-- Type checking with modern Python syntax
+You need [uv](https://docs.astral.sh/uv/) (every Mac and CI runner here has it). Run the CLI straight from GitHub at a tag:
 
-### Build & Testing
-
-- **Rollup** configuration for Web Components
-- **@web/test-runner** for cross-browser testing
-- **Custom Elements Manifest** generation
-
-### Git Hooks
-
-- **Lefthook** for fast, reliable pre-commit hooks
-- Auto-formatting and linting on commit
-
-### Editor
-
-- **VS Code** settings and extension recommendations
-- **EditorConfig** for consistent formatting
-- CSS custom data for Web Components pseudo-elements
-
-## Installation
-
-### Method 1: Git Submodule (Recommended)
-
-Add pedantry as a submodule to stay in sync with updates:
-
-**1. Add the submodule:**
-
-```bash
-cd your-project
-git submodule add https://github.com/yourusername/pedantry.git .pedantry
+```zsh
+uvx --from git+https://github.com/dryan-org/pedantry@v2.0.0 pedantry sync --type python --type typescript
 ```
 
-**2. Run the setup script:**
+`--type` is one or more of `python`, `typescript`, `javascript`, `css`, `django` (Django implies Python, JavaScript and CSS). The first sync also records the pin, so later runs need no options.
 
-```bash
-# For Python-only projects
-uv run --isolated --with typer .pedantry/setup-pedantry.py --type python
+For a repo with a `package.json`, add the npm package (it is not published to npmjs.org; it installs from GitHub like any `github:` dependency):
 
-# For TypeScript/JavaScript-only projects
-uv run --isolated --with typer .pedantry/setup-pedantry.py --type typescript
-
-# For multiple types (e.g., Python + TypeScript)
-uv run --isolated --with typer .pedantry/setup-pedantry.py --type python --type typescript
-
-# For Django projects (includes Python + CSS + JS support)
-uv run --isolated --with typer .pedantry/setup-pedantry.py --type django
-
-# For CSS-only projects
-uv run --isolated --with typer .pedantry/setup-pedantry.py --type css --type javascript
-
-# Custom pedantry directory location
-uv run --isolated --with typer .pedantry/setup-pedantry.py --type python --pedantry-dir ../pedantry
-
-# See help for all options
-uv run --isolated --with typer .pedantry/setup-pedantry.py --help
+```zsh
+npm install --save-dev github:dryan-org/pedantry#v2.0.0
+npm install --save-dev eslint prettier typescript   # whichever tools the repo uses
 ```
 
-The script copies all necessary config files to your project and generates a custom `lefthook.yml` based on your project types.
+Then enable the hooks and commit:
 
-**3. Merge dependencies:**
-
-Merge `devDependencies` from `.pedantry/package.json` into your `package.json`, then:
-
-```bash
-npm install      # Install JavaScript dependencies
-uv sync          # Install Python dependencies (if Python project)
-lefthook install # Set up git hooks
-```
-
-**4. Commit the setup:**
-
-```bash
-git add .gitmodules .pedantry <config-files>
-git commit -m "➕ Add pedantry config submodule"
-```
-
-**⚠️ Important: DO NOT modify files in the `.pedantry/` submodule directory.** Always edit the copied config files in your project root. The submodule should remain untouched so you can update it cleanly.
-
-**Updating pedantry:**
-
-```bash
-git submodule update --remote .pedantry
-git add .pedantry
-git commit -m "⬆️ Update pedantry configs"
-```
-
-**Cloning projects with the submodule:**
-
-```bash
-git clone --recurse-submodules <your-repo-url>
-# or if already cloned:
-git submodule update --init --recursive
-```
-
-### Method 2: Copy Files Directly
-
-Copy the configuration files you need to your project:
-
-```bash
-# Core configs (always needed)
-cp package.json tsconfig.json eslint.config.js .prettierrc.json5 .prettierignore .editorconfig lefthook.yml <your-project>/
-
-# CSS (if using)
-cp stylelint.config.mjs <your-project>/
-
-# Python (if using)
-cp pyproject.toml <your-project>/
-
-# Build tools (if needed)
-cp rollup.config.js vitest.config.ts web-test-runner.config.js custom-elements-manifest.config.js <your-project>/
-
-# VS Code settings
-cp -r .vscode <your-project>/
-
-# AI agent instructions (AGENTS.md + CLAUDE.md shim)
-cp AGENTS.md CLAUDE.md <your-project>/
-```
-
-Then install dependencies:
-
-```bash
-npm install      # Install JavaScript dependencies
-uv sync          # Install Python dependencies (if Python project)
-lefthook install # Set up git hooks
-```
-
-**Python dependencies (if using Python):**
-
-```bash
-# Using uv (recommended)
-uv add --dev ruff pytest
-
-# Install ty for type checking (globally recommended)
-pip install ty
-# or via pipx for isolation
-pipx install ty
-
-# Or using pip
-pip install ruff pytest
-```
-
-## Customization
-
-**Update `package.json`:**
-
-- Change `name`, `description`, `author`, `license`
-- Remove unused dependencies
-- Adjust scripts as needed
-
-**Update `tsconfig.json`:**
-
-- Adjust `target` and `lib` for your browser/Node.js support
-- Modify path aliases
-- Change `include`/`exclude` patterns
-- Add/remove compiler options
-
-**Update `eslint.config.js`:**
-
-- Add framework-specific plugins if needed
-- Adjust rules for your preferences
-- Modify file patterns and ignores
-
-**Update `pyproject.toml`:**
-
-- Change Python version target
-- Adjust Ruff rules
-- Modify pytest configuration
-- Configure Pyright type checking mode (`basic`, `standard`, or `strict`)
-- Adjust Pyright report settings for your strictness preference
-
-## Usage
-
-### Linting
-
-```bash
-# Lint everything
-npm run lint
-
-# Lint and fix everything
-npm run lint:fix
-
-# Lint specific languages
-npm run lint:js
-npm run lint:css
-npm run lint:py
-
-# Fix specific languages
-npm run lint:js:fix
-npm run lint:css:fix
-npm run lint:py:fix
-
-# Python type checking
-uv run ty           # Type check Python code
-uv run ty --watch   # Watch mode
-
-# Python dead code detection
-uv run vulture src/ # Find unused code
-
-# Django code upgrades (Django projects only)
-uv run django-upgrade --target-version 5.1 src/**/*.py
-```
-
-### Formatting
-
-```bash
-# Format all files
-npm run format
-```
-
-### Testing
-
-```bash
-# Run Node.js/TypeScript tests (Vitest)
-npm test              # Watch mode
-npm run test:run      # Single run
-npm run test:coverage # With coverage
-npm run test:ui       # Interactive UI
-
-# Run browser-based Web Component tests
-npm run test:browser  # @web/test-runner
-
-# Run Python tests
-pytest
-```
-
-### Building
-
-```bash
-# Build with Rollup
-npm run build
-
-# Generate Custom Elements Manifest
-npm run analyze
-```
-
-## TypeScript Path Aliases
-
-The following path aliases are configured by default:
-
-- `@/*` → `src/*`
-- `~/*` → `src/*`
-- `@components/*` → `src/components/*`
-- `@utils/*` → `src/utils/*`
-- `@styles/*` → `src/styles/*`
-- `@types/*` → `src/types/*`
-
-Adjust these in `tsconfig.json` to match your project structure.
-
-## Test Runners
-
-This configuration includes **two test runners** for different use cases:
-
-### Vitest (Default for Node.js/TypeScript)
-
-**Included by default.** Fast, modern test runner with excellent TypeScript and ESM support.
-
-**Features:**
-
-- Jest-compatible API
-- Native TypeScript support
-- Fast watch mode with smart re-running
-- Built-in coverage (v8)
-- Optional UI mode
-- Works great even if you're not using Vite for builds
-
-**Usage:**
-
-```bash
-npm test              # Watch mode
-npm run test:run      # Single run
-npm run test:coverage # With coverage report
-npm run test:ui       # Interactive UI
-```
-
-**Configuration:** `vitest.config.ts`
-
-### @web/test-runner (For Browser-Based Tests)
-
-**For Web Components that need real browser environments.**
-
-**Features:**
-
-- Tests in real browsers (Chromium, Firefox, WebKit)
-- Real Shadow DOM and Custom Elements
-- Playwright integration
-- Cross-browser testing
-
-**Usage:**
-
-```bash
-npm run test:browser
-```
-
-**Configuration:** `web-test-runner.config.js`
-
-### Alternative Test Runners
-
-If Vitest doesn't fit your needs:
-
-- **Jest** - More mature, wider ecosystem, but slower and ESM is tricky
-- **Node.js Test Runner** - Built-in to Node 18+, zero dependencies, minimal features
-- **uvu** - Extremely fast, minimal API, tiny footprint
-
-## HTML Linting
-
-HTML linting requirements vary by project type. **Before setting up HTML linting, determine:**
-
-1. **Django projects**: Use `djlint`
-2. **11ty projects**: Use `htmlhint` or `html-validate`
-3. **Web Components**: HTML is in template literals (covered by ESLint)
-4. **Static HTML**: Use `htmlhint` or `html-validate`
-
-**Ask me about your project type and I'll set up appropriate HTML linting!**
-
-## Project Types
-
-This configuration supports:
-
-### Web Components (Vanilla)
-
-- Standard Custom Elements API
-- Shadow DOM
-- TypeScript with decorators
-- No framework dependencies
-
-### Web Components (Lit)
-
-- Lit decorators (`@customElement`, `@property`, etc.)
-- Reactive properties
-- Template literals with `html` and `css`
-- Shadow DOM
-
-### Python Only
-
-- Modern Python (3.11+)
-- Type hints with Pyright type checking
-- Ruff for linting and formatting
-- pytest for testing
-
-### Hybrid Python + JavaScript
-
-- FastAPI + Web Components
-- Django + Web Components
-- Flask + Web Components
-- Any Python backend + JavaScript frontend
-
-## Python Type Checking
-
-This configuration includes **Pyright** for static type checking, accessed through the `ty` CLI.
-
-### What is ty?
-
-`ty` is a lightweight CLI wrapper around Pyright that provides:
-
-- Faster startup than the full Pyright npm package
-- Simple, focused interface
-- Watch mode for continuous type checking
-- Integration with `pyproject.toml` configuration
-
-### Using ty
-
-```bash
-# Type check your Python code
-uv run ty
-
-# Watch mode (re-check on file changes)
-uv run ty --watch
-
-# Check specific files or directories
-uv run ty src/
-uv run ty src/module.py
-```
-
-### Configuration
-
-Type checking is configured in `pyproject.toml` under `[tool.pyright]`:
-
-**Type checking modes:**
-
-- `off` - No type checking
-- `basic` - Basic type checking (recommended for most projects)
-- `standard` - Default Pyright strictness (included in this config)
-- `strict` - Maximum strictness
-
-**Adjusting strictness:**
-
-For stricter checking, uncomment additional report options in `pyproject.toml`:
-
-```toml
-[tool.pyright]
-typeCheckingMode = "strict"  # or "basic", "standard"
-
-# Uncomment for more strictness
-reportConstantRedefinition = true
-reportIncompatibleMethodOverride = true
-reportUntypedFunctionDecorator = true
-```
-
-### VS Code Integration
-
-Pyright is built into the Python extension for VS Code, so type errors will appear inline automatically. The `ty` CLI is useful for:
-
-- CI/CD pipelines
-- Pre-commit hooks (if desired)
-- Command-line type checking
-- Editor-agnostic workflows
-
-## VS Code Extensions
-
-Recommended extensions (see `.vscode/extensions.json`):
-
-- Prettier - Code formatter
-- ESLint
-- Stylelint
-- EditorConfig
-- Ruff
-- Pylance (includes Pyright for Python type checking)
-- lit-html (syntax highlighting)
-- lit-plugin (Lit-specific features)
-
-Install them with: `Extensions: Show Recommended Extensions`
-
-## Pre-Commit Hooks
-
-Lefthook runs these on `pre-commit`:
-
-1. **Prettier** - Format staged files
-2. **ESLint** - Lint and fix JavaScript/TypeScript
-3. **Stylelint** - Lint and fix CSS
-4. **Ruff** - Format and lint Python
-
-All fixes are automatically staged.
-
-To skip hooks (not recommended):
-
-```bash
-git commit --no-verify
-```
-
-## Verification
-
-After setup, verify everything works:
-
-```bash
-# Check for issues
-npm run lint
-
-# Fix all auto-fixable issues
-npm run lint:fix
-
-# Format all files
-npm run format
-
-# Type check Python code (if using Python)
-uv run ty
-
-# Test git hooks (without committing)
-lefthook run pre-commit
-```
-
-## Customization Tips
-
-### Adding Framework Support
-
-**For React, Vue, etc. (not recommended for Web Components projects):**
-
-```bash
-npm install -D eslint-plugin-react
-```
-
-Update `eslint.config.js` accordingly.
-
-### Strict TypeScript
-
-Enable more strict options in `tsconfig.json`:
-
-```json
-{
-  "compilerOptions": {
-    "noUncheckedIndexedAccess": true,
-    "noPropertyAccessFromIndexSignature": true,
-    "exactOptionalPropertyTypes": true
-  }
-}
-```
-
-### Additional Ruff Rules
-
-Enable more rules in `pyproject.toml`:
-
-```toml
-[tool.ruff.lint]
-select = [
-    "E", "W", "F", "I", "N", "UP", "B", "C4", "SIM",
-    "TCH",   # flake8-type-checking
-    "PTH",   # flake8-use-pathlib
-    "RUF",   # Ruff-specific rules
-    "PERF",  # Performance linting
-]
-```
-
-## Troubleshooting
-
-### TypeScript errors about missing modules
-
-If you see "Cannot find module" errors in the config files, this is expected before running `npm install`. The dependencies are listed in `package.json` but not installed yet. Run:
-
-```bash
-npm install
-```
-
-### Lefthook not running
-
-```bash
+```zsh
 lefthook install
 ```
 
-### ESLint errors with JSON files
+For Python tools the hooks call `uv run`, so the repo needs them as dev dependencies:
 
-Ensure `@eslint/json` is installed and configured in `eslint.config.js`.
+```zsh
+uv add --dev ruff vulture ty pytest        # plus django-upgrade for Django
+```
 
-### Stylelint errors with Web Components pseudo-elements
+## The CLI
 
-The config includes rules for `:host`, `::slotted`, and `::part`. If you see errors, check `stylelint.config.mjs`.
+```text
+pedantry sync    [--type T ...] [--vendor] [--upgrade] [--dry-run] [--force] [--json] [--path DIR]
+pedantry check   [--diff] [--json] [--path DIR]
+pedantry migrate [--type T ...] [--vendor] [--skip-npm] [--dry-run] [--json] [--path DIR]
+pedantry version
+```
 
-### Python imports not resolving
+### sync
 
-Ensure you have a virtual environment activated and dependencies installed.
+Writes the managed files for the pinned version and types. Run it again and nothing changes.
 
-### TypeScript path aliases not working
+| File                           | How it is managed                                                                              |
+| ------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `lefthook.yml`                 | Whole file, stamped. Python tools via `uv run`; prettier, eslint and stylelint via `npx`.      |
+| `.pedantry/AGENTS.md`          | Whole file, stamped. The shared agent rules.                                                   |
+| `.editorconfig`                | Block between `# >>> pedantry` and `# <<< pedantry`. Anything outside the markers is yours.    |
+| `.prettierignore`              | Same marked block.                                                                             |
+| `pyproject.toml`               | Same marked block with ruff, ty, vulture, pytest (and django-upgrade). Python and Django only. |
+| `pedantry.toml` (no pyproject) | The pin only.                                                                                  |
+| `.pedantry/*` with `--vendor`  | Local copies of the JS configs, see below.                                                     |
 
-1. Check `tsconfig.json` `paths` configuration
-2. If using a bundler, configure it to resolve the same paths
-3. For Rollup, use `@rollup/plugin-alias`
+Stamped files start with `pedantry X.Y.Z: managed by pedantry sync, do not edit.`
+
+Safeguards: sync refuses to overwrite a `lefthook.yml` (or other whole-file target) that has no stamp, and it refuses to write a `pyproject.toml` that would define a managed table twice. In both cases it points you to `pedantry migrate`. `--force` overwrites anyway. `--dry-run` prints diffs and writes nothing.
+
+### check
+
+Exits 1 and lists the files that differ from what sync would write for the pinned version (`--diff` shows how). Edits outside the markers never count as drift. Run it in CI:
+
+```yaml
+- run: uvx --from git+https://github.com/dryan-org/pedantry@v2.0.0 pedantry check
+```
+
+### migrate
+
+Moves a repo that uses the old `.pedantry` git submodule and copied files. It never commits.
+
+1. Removes the submodule (`.gitmodules`, the index entry, the checkout), and replaces symlinks into it.
+2. With a `package.json`, runs `npm install --save-dev github:dryan-org/pedantry#vX.Y.Z` (skip with `--skip-npm`).
+3. Rewrites the `eslint.config.*` import to `@dryan/pedantry/eslint`, points `tsconfig.json` at `@dryan/pedantry/tsconfig` (dropping options identical to the base), drops `.pedantry` from ignores and excludes, and moves an empty `.prettierrc.json5` to `"prettier": "@dryan/pedantry/prettier"`.
+4. Writes the pin and runs sync.
+5. Prints a report: what it replaced (identical to pedantry, or a stale copy of an older pedantry), what it **preserved** (per-repo edits), and what needs a human.
+
+What "preserved" means: hooks that differ from pedantry's move to `lefthook-local.yml`; editor and ignore rules go after the managed block; a `pyproject.toml` table you changed stays where it is and is listed under `keep` in `[tool.pedantry]`; tsconfig options that differ stay in the repo's `tsconfig.json`. Use `--dry-run` to see the plan first.
+
+### Repo-specific changes
+
+| To change                       | Edit                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Hooks                           | `lefthook-local.yml` (lefthook merges it in)                                                   |
+| Editor or prettier ignore rules | Below `# <<< pedantry`                                                                         |
+| ruff, ty, vulture, pytest       | Outside the marked block. To own a whole managed table, add it to `keep` in `[tool.pedantry]`. |
+| ESLint, TypeScript, Stylelint   | The repo's own config, which imports or extends `@dryan/pedantry/...`                          |
+| Agent rules                     | The repo's own `AGENTS.md`, which keeps the line `@.pedantry/AGENTS.md`                        |
+
+**Never edit a managed file by hand.** `pedantry check` will fail, and the next sync overwrites it.
+
+## Versioning
+
+Tags are `vX.Y.Z` and cover both the npm package and the CLI. A repo's pin lives in one place:
+
+```toml
+# pyproject.toml, or pedantry.toml (without the table header) in repos with no pyproject
+[tool.pedantry]
+version = "2.0.0"
+types = ["python", "typescript"]
+```
+
+sync and check refuse to run when the running pedantry is not the pinned version, and print the exact `uvx --from ...@vX.Y.Z` command to use. To upgrade, run the new version with `--upgrade`:
+
+```zsh
+uvx --from git+https://github.com/dryan-org/pedantry@v2.1.0 pedantry sync --upgrade
+```
+
+and bump the npm dependency (`npm install --save-dev github:dryan-org/pedantry#v2.1.0`).
+
+## The npm package
+
+```ts
+// eslint.config.ts
+import type { Linter } from "eslint";
+import pedantry from "@dryan/pedantry/eslint";
+
+const config: Linter.Config[] = [
+  ...pedantry,
+  // repo overrides
+];
+export default config;
+```
+
+```jsonc
+// tsconfig.json: only compilerOptions are shared. paths, include, exclude and
+// outDir stay in the repo, because TypeScript resolves them relative to the file they are in.
+{
+  "extends": "@dryan/pedantry/tsconfig",
+  "compilerOptions": { "outDir": "dist" },
+}
+```
+
+```jsonc
+// package.json
+{ "prettier": "@dryan/pedantry/prettier" }
+```
+
+```js
+// stylelint.config.mjs
+export default { extends: ["@dryan/pedantry/stylelint"] };
+```
+
+Helpers take overrides (plain objects merge into the defaults, arrays replace them):
+
+```ts
+// vitest.config.ts
+import { defineConfig } from "vitest/config";
+import { vitestConfig } from "@dryan/pedantry/vitest";
+export default defineConfig(vitestConfig({ test: { environment: "jsdom" } }));
+```
+
+```js
+// rollup.config.js
+import { rollupConfig } from "@dryan/pedantry/rollup";
+export default rollupConfig({ input: "src/my-element.ts" });
+
+// web-test-runner.config.js
+import { webTestRunnerConfig } from "@dryan/pedantry/web-test-runner";
+export default await webTestRunnerConfig({ files: ["test/**/*.test.js"] });
+
+// custom-elements-manifest.config.js
+import { customElementsManifestConfig } from "@dryan/pedantry/custom-elements-manifest";
+export default customElementsManifestConfig();
+```
+
+The ESLint, Prettier and Stylelint configs and their plugins come with the package. The tools themselves (`eslint`, `prettier`, `stylelint`, `typescript`, `vitest`, `rollup` and its plugins, `@web/test-runner`) are the repo's own dev dependencies.
+
+## Vendoring (repos without GitHub access)
+
+For repos that cannot install from GitHub (for example Azure DevOps), sync writes everything locally:
+
+```zsh
+uvx --from git+https://github.com/dryan-org/pedantry@v2.0.0 pedantry sync --type typescript --vendor
+```
+
+This adds `.pedantry/eslint.config.ts`, `.pedantry/tsconfig.base.json`, `.pedantry/stylelint.config.mjs` and `.pedantry/helpers/*.js`, and records `vendor = true` in the pin so `check` covers them. The repo's own configs import them (`import pedantry from "./.pedantry/eslint.config"`, `"extends": "./.pedantry/tsconfig.base.json"`), and sync prints the `npm install --save-dev` line for the packages they import. Updates are manual: run sync again with a newer version.
+
+## Development
+
+```zsh
+uv sync
+uv run pytest                      # CLI tests: sync, check, migrate on fixture repos
+npm ci --ignore-scripts
+npm test                           # packs the npm package, installs it into a fixture, runs eslint/tsc/prettier/stylelint
+uv run pedantry check              # this repo follows its own pin
+```
+
+The shared agent rules are `src/pedantry/data/AGENTS.md`; the npm files are in `src/pedantry/data/js/`. See `AGENTS.md` for the release steps.
 
 ## License
 
-ISC (or adjust to your preference)
-
-## Contributing
-
-This is a personal configuration template. Fork and customize for your own needs!
+ISC

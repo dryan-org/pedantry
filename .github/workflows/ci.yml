@@ -1,4 +1,4 @@
-name: CI
+name: ci
 
 on:
   pull_request:
@@ -8,23 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "lts/*"
-      - run: npm ci --ignore-scripts
-
-      - uses: astral-sh/setup-uv@v5
-      - run: uv sync --all-extras
-
-      # These are the shared configs applied to this repo's own files -
-      # green means the configs still lint the repo clean.
-      - run: npx eslint .
-      - run: npx prettier --check .
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
+  ci:
+    uses: ./.github/workflows/checks.yml

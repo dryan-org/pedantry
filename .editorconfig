@@ -1,5 +1,5 @@
-# EditorConfig helps maintain consistent coding styles
-# This file takes precedence over VS Code user settings
+# >>> pedantry
+# pedantry 2.0.0: managed by pedantry sync, do not edit.
 root = true
 
 [*]
@@ -21,3 +21,4 @@ trim_trailing_whitespace = false
 
 [Makefile]
 indent_style = tab
+# <<< pedantry
