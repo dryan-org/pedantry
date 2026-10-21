@@ -1,6 +1,7 @@
 """Move an existing repo from the pedantry submodule and copied files to v2."""
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -18,22 +19,31 @@ from pedantry.content import (
     PYTHON_TABLES,
     RETIRED_TABLES,
     data_file,
+    detect_layout,
     pyproject_tables,
     render_lefthook,
     table_value,
+    typescript_major,
 )
 from pedantry.formats import (
     TomlSection,
     digest,
     dump_json,
-    join_toml,
     loads_jsonc,
     parse_lefthook,
     split_editorconfig,
     split_toml,
 )
-from pedantry.model import PedantryError, Pin, ProjectType, effective, read_text
-from pedantry.sync import ResolvedPin, compute, resolve_pin
+from pedantry.model import (
+    BLOCK_BEGIN,
+    BLOCK_END,
+    PedantryError,
+    Pin,
+    ProjectType,
+    effective,
+    read_text,
+)
+from pedantry.sync import CLAUDE_IMPORT, ResolvedPin, compute, resolve_pin
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -152,70 +162,126 @@ def infer_types(root: Path) -> list[ProjectType]:
 # --------------------------------------------------------------- pyproject
 
 
+MARKER = [BLOCK_BEGIN, BLOCK_END]
+
+
+def _is_marker(line: str) -> bool:
+    return line.strip() in MARKER
+
+
+def _split_with_leading_comments(text: str) -> list[tuple[list[str], TomlSection]]:
+    """Table sections paired with the comment lines that sit right above them.
+
+    A comment block directly above a table header belongs to that table, so it
+    moves, or goes, with it. The comments that open the file stay with the file.
+    """
+    sections = split_toml(text)
+    leads: list[list[str]] = [[] for _ in sections]
+    for index in range(len(sections) - 1):
+        lines = sections[index].lines
+        cut = len(lines)
+        while (
+            cut > 0
+            and lines[cut - 1].lstrip().startswith("#")
+            and not _is_marker(lines[cut - 1])
+        ):
+            cut -= 1
+        if cut == 0 and sections[index].header is None:
+            continue
+        leads[index + 1] = lines[cut:]
+        del lines[cut:]
+    return list(zip(leads, sections, strict=True))
+
+
 def migrate_pyproject(
     root: Path, types: frozenset[ProjectType], report: Report
 ) -> tuple[str | None, list[str]]:
-    """Drop managed tables that match pedantry; list the ones the repo changed."""
+    """Drop managed tables that match pedantry; list the ones the repo changed.
+
+    The managed block lands where the first dropped managed table was (or where
+    the old block was), so the other tables keep their order.
+    """
     text = read_text(root / "pyproject.toml")
     if text is None:
         return None, []
-    base = without_block(text) if find_block(text) else text
-    managed = dict(pyproject_tables(types))
+    span = find_block(text)
+    if span is not None:
+        lines = text.split("\n")
+        lines[span[0] : span[1] + 1] = MARKER
+        base = "\n".join(lines)
+    else:
+        base = text
+    managed = dict(pyproject_tables(types, detect_layout(root, text)))
     unused = {
         header: body
         for header, body in PYTHON_TABLES + DJANGO_TABLES
         if header not in managed
     }
     keep: list[str] = []
-    kept: list[TomlSection] = []
-    for section in split_toml(base):
+    kept: list[list[str]] = []
+    marker_at: int | None = None
+    for lead, section in _split_with_leading_comments(base):
         header = section.header
         if header is None or header.startswith("[["):
-            kept.append(section)
+            kept.append(lead + section.lines)
             continue
+        dropped = False
         if header not in managed and header not in RETIRED_TABLES:
             if header in unused and _is_stale(section, header, unused[header]):
                 report.replaced.append(
                     f"pyproject.toml: [{header}] (not needed for this repo's types)"
                 )
+                dropped = True
             else:
-                kept.append(section)
-            continue
-        try:
-            value = section.value()
-        except (tomllib.TOMLDecodeError, KeyError):
-            kept.append(section)
-            if header in managed:
-                keep.append(header)
-            report.manual.append(
-                f"pyproject.toml: [{header}] could not be parsed; kept as is"
-            )
-            continue
-        if header in RETIRED_TABLES:
-            if not value or legacy.known("pyproject", header, digest(value)):
-                report.replaced.append(f"pyproject.toml: [{header}] (retired table)")
-            else:
-                kept.append(section)
-                report.preserved.append(
-                    f"pyproject.toml: [{header}] (pedantry no longer manages it)"
-                )
-        elif value == table_value(header, managed[header]):
-            report.replaced.append(
-                f"pyproject.toml: [{header}] (identical to pedantry)"
-            )
-        elif legacy.known("pyproject", header, digest(value)):
-            report.replaced.append(
-                f"pyproject.toml: [{header}] (stale copy of an older pedantry)"
-            )
+                kept.append(lead + section.lines)
         else:
-            kept.append(section)
-            keep.append(header)
-            report.preserved.append(
-                f"pyproject.toml: [{header}] differs from pedantry; kept in place "
-                "and listed "
-                "under `keep` in [tool.pedantry]"
-            )
-    return join_toml(kept), keep
+            try:
+                value = section.value()
+            except (tomllib.TOMLDecodeError, KeyError):
+                kept.append(lead + section.lines)
+                if header in managed:
+                    keep.append(header)
+                report.manual.append(
+                    f"pyproject.toml: [{header}] could not be parsed; kept as is"
+                )
+                continue
+            if header in RETIRED_TABLES:
+                if not value or legacy.known("pyproject", header, digest(value)):
+                    report.replaced.append(
+                        f"pyproject.toml: [{header}] (retired table)"
+                    )
+                    dropped = True
+                else:
+                    kept.append(lead + section.lines)
+                    report.preserved.append(
+                        f"pyproject.toml: [{header}] (pedantry no longer manages it)"
+                    )
+            elif value == table_value(header, managed[header]):
+                report.replaced.append(
+                    f"pyproject.toml: [{header}] (identical to pedantry)"
+                )
+                dropped = True
+            elif legacy.known("pyproject", header, digest(value)):
+                report.replaced.append(
+                    f"pyproject.toml: [{header}] (stale copy of an older pedantry)"
+                )
+                dropped = True
+            else:
+                kept.append(lead + section.lines)
+                keep.append(header)
+                report.preserved.append(
+                    f"pyproject.toml: [{header}] differs from pedantry; kept in place "
+                    "and listed under `keep` in [tool.pedantry]"
+                )
+        if dropped and header in managed and marker_at is None:
+            marker_at = len(kept)
+    if marker_at is not None and not any(
+        MARKER[0] == line.strip() for chunk in kept for line in chunk
+    ):
+        before = kept[marker_at - 1] if marker_at else []
+        pad = [""] if before and before[-1].strip() else []
+        kept.insert(marker_at, [*pad, *MARKER, ""])
+    return "\n".join(line for chunk in kept for line in chunk), keep
 
 
 def _is_stale(section: TomlSection, header: str, body: str) -> bool:
@@ -240,9 +306,12 @@ def migrate_lefthook(
     if old is None:
         return None
     parsed = parse_lefthook(old)
+    ts_major = typescript_major(read_text(root / "package.json"))
     generated = {
         command.name: command
-        for command in parse_lefthook(render_lefthook(version, types)).commands
+        for command in parse_lefthook(
+            render_lefthook(version, types, ts_major)
+        ).commands
     }
     extra_commands: list[str] = []
     for command in parsed.commands:
@@ -269,6 +338,8 @@ def migrate_lefthook(
         if line.strip() and line.strip() != "parallel: false"
     ]
     other = [line for line in parsed.other if line.strip()]
+    if all(line.lstrip().startswith("#") for line in other):
+        other = []  # only the stamp and header comments of a lefthook.yml v2 wrote
     if extra_options:
         report.preserved.append(
             "lefthook.yml: pre-commit options moved to lefthook-local.yml"
@@ -310,8 +381,10 @@ def migrate_editorconfig(root: Path, report: Report) -> str | None:
     kept: list[str] = []
     same: list[str] = []
     stale: list[str] = []
+    header_comments: list[str] = []
     for section in split_editorconfig(base):
         if section.header is None:
+            header_comments = _leading_comments(section.lines)
             continue
         props = section.properties()
         if section.header in managed and props == managed[section.header]:
@@ -329,7 +402,16 @@ def migrate_editorconfig(root: Path, report: Report) -> str | None:
     if stale:
         report.replaced.append(f".editorconfig: {', '.join(stale)} (stale copy)")
     text = "\n".join(kept).strip("\n")
+    if header_comments:
+        # The managed block replaces the marker in place, below these comments.
+        top = "\n".join(header_comments) + "\n\n" + "\n".join(MARKER)
+        return top + "\n" + ("\n" + text + "\n" if text else "")
     return text + "\n" if text else ""
+
+
+def _leading_comments(lines: list[str]) -> list[str]:
+    """The comment lines before the first section, blank lines dropped."""
+    return [line for line in lines if line.strip().startswith(("#", ";"))]
 
 
 def migrate_prettierignore(root: Path, report: Report) -> str | None:
@@ -478,12 +560,24 @@ def migrate_package_json(
     """
     text = read_text(root / "package.json")
     rc = read_text(root / ".prettierrc.json5")
-    if text is None or rc is None or vendor:
+    if rc is None or (vendor and text is not None):
         return None, False
     try:
         rc_data = loads_jsonc(rc)
     except json.JSONDecodeError:
         report.manual.append(".prettierrc.json5: not plain JSON(5); left alone")
+        return None, False
+    if text is None:
+        if rc_data == {}:
+            report.actions.append(
+                "deleted the empty .prettierrc.json5 (no package.json here; "
+                "Prettier's defaults apply)"
+            )
+            return None, True
+        report.manual.append(
+            ".prettierrc.json5 sets options, but pedantry's Prettier config is the "
+            "defaults. Review it before deleting"
+        )
         return None, False
     data = json.loads(text)
     if rc_data != {}:
@@ -512,13 +606,57 @@ def migrate_agents(root: Path, report: Report) -> str:
     if text is None:
         report.actions.append("AGENTS.md: created, importing @.pedantry/AGENTS.md")
         return f"# Agent Instructions\n\n{IMPORT_LINE}\n"
-    if IMPORT_LINE in text:
-        return text
-    if legacy.known_agents(text):
+    if legacy.known_agents(text) and IMPORT_LINE not in text:
         report.replaced.append("AGENTS.md: a full copy of the old pedantry rules")
         return f"# Agent Instructions\n\n{IMPORT_LINE}\n"
+    mentions = [
+        str(number)
+        for number, line in enumerate(text.splitlines(), start=1)
+        if "submodule" in line.lower()
+    ]
+    if mentions:
+        report.manual.append(
+            f'AGENTS.md: mentions "submodule" on line {", ".join(mentions)}. '
+            ".pedantry is now a generated directory, not a git submodule: edit by "
+            "hand"
+        )
+    if IMPORT_LINE in text:
+        return text
     report.actions.append("AGENTS.md: added the @.pedantry/AGENTS.md import")
     return text.rstrip("\n") + f"\n\n{IMPORT_LINE}\n"
+
+
+def migrate_claude(root: Path, report: Report) -> str | None:
+    """CLAUDE.md importing AGENTS.md, when the repo has no CLAUDE.md."""
+    target = root / "CLAUDE.md"
+    if target.exists() or target.is_symlink():
+        return None
+    report.actions.append("CLAUDE.md: created, importing @AGENTS.md")
+    return CLAUDE_IMPORT
+
+
+def init_submodule(root: Path, report: Report) -> None:
+    """Check out the old submodule, so the analysis does not depend on that."""
+    checkout = root / ".pedantry"
+    if checkout.is_dir() and any(checkout.iterdir()):
+        return
+    result = subprocess.run(
+        ["git", "submodule", "update", "--init", "--", ".pedantry"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
+    if result.returncode == 0:
+        report.actions.append("initialized the .pedantry submodule to compare against")
+        return
+    detail = (result.stderr.strip().splitlines() or ["git failed"])[-1]
+    report.manual.append(
+        f"could not initialize the .pedantry submodule ({detail}). Files that were "
+        "symlinks into it, and copies compared against it, may be reported "
+        "differently than with it checked out"
+    )
 
 
 # ---------------------------------------------------------------- the plan
@@ -541,6 +679,7 @@ def plan_migrate(
 
     submodule = has_submodule(root)
     if submodule:
+        init_submodule(root, report)
         report.actions.append("removed the .pedantry git submodule (not committed)")
     npm_install = None
     uses_npm = bool(
@@ -551,20 +690,11 @@ def plan_migrate(
         report.actions.append(f"ran `{npm_install}`")
 
     symlinks = submodule_symlinks(root)
-    for name in symlinks:
-        if (root / name).exists():
-            report.actions.append(
-                f"{name}: was a symlink into the old submodule; now a regular file"
-            )
-        else:
-            report.manual.append(
-                f"{name}: was a symlink into the old submodule whose target is not "
-                "checked out here, so it was removed; restore from pedantry if needed"
-            )
 
     overlay: dict[str, str] = {}
     edits: dict[str, str | None] = {}
 
+    report_new_ruleset(root, frozenset(chosen), report)
     pyproject_text, keep = migrate_pyproject(root, frozenset(chosen), report)
     if pyproject_text is not None:
         overlay["pyproject.toml"] = pyproject_text
@@ -613,6 +743,11 @@ def plan_migrate(
     if drop_rc:
         edits[".prettierrc.json5"] = None
     edits["AGENTS.md"] = migrate_agents(root, report)
+    claude = migrate_claude(root, report)
+    if claude is not None:
+        edits["CLAUDE.md"] = claude
+    report_symlinks(root, symlinks, edits, report)
+    report_typescript(root, report)
 
     for name in COPIED_CONFIGS:
         if (root / name).is_file():
@@ -641,6 +776,75 @@ def plan_migrate(
         elif read_text(root / path) != text:
             pending[path] = text
     return Plan(report, pending, submodule, npm_install, list(chosen), symlinks)
+
+
+def report_new_ruleset(
+    root: Path, types: frozenset[ProjectType], report: Report
+) -> None:
+    """Say so when the repo never configured ruff: the managed rules are new to it."""
+    tables = dict(pyproject_tables(types))
+    if "tool.ruff.lint" not in tables:
+        return
+    text = read_text(root / "pyproject.toml") or ""
+    if find_block(text) is not None:
+        return
+    has_ruff = any(
+        (s.header or "").startswith("tool.ruff") for s in split_toml(text)
+    ) or any((root / name).is_file() for name in ("ruff.toml", ".ruff.toml"))
+    if has_ruff:
+        return
+    select = table_value("tool.ruff.lint", tables["tool.ruff.lint"])["select"]
+    families = ", ".join(map(str, select)) if isinstance(select, list) else ""
+    report.manual.append(
+        "ruff: this repo had no [tool.ruff], so the managed ruleset is new to it "
+        f"(rule families {families}) and may flag existing code. Run `pedantry "
+        "sync`, then `ruff check --statistics` to see how much"
+    )
+
+
+def report_symlinks(
+    root: Path,
+    symlinks: list[str],
+    edits: dict[str, str | None],
+    report: Report,
+) -> None:
+    typechanges: list[str] = []
+    for name in symlinks:
+        if not (root / name).exists():
+            report.replaced.append(
+                f"{name}: symlink into the old submodule, dangling here; removed "
+                "(nothing to restore)"
+            )
+        elif edits.get(name, "") is None:
+            report.replaced.append(
+                f"{name}: symlink into the old submodule; removed (pedantry no "
+                "longer needs it)"
+            )
+        else:
+            typechanges.append(name)
+            report.actions.append(
+                f"{name}: was a symlink into the old submodule; now a regular file"
+            )
+    if typechanges:
+        report.manual.append(
+            f"{', '.join(typechanges)}: git sees a symlink turning into a regular "
+            "file as a typechange, and `infra gh commit` (infra-core before 1.2.2) "
+            "keeps mode 120000 for it. Commit in two steps: first delete the "
+            "symlinks, then add the files. infra-core 1.2.2 and later handles it "
+            "in one, once released"
+        )
+
+
+def report_typescript(root: Path, report: Report) -> None:
+    major = typescript_major(read_text(root / "package.json"))
+    if major is not None and major >= 7:
+        report.manual.append(
+            f"package.json asks for TypeScript {major}: typescript-eslint cannot "
+            "run on TypeScript 7 or later. `@dryan/pedantry/eslint` skips "
+            "TypeScript files there (JavaScript and JSON are still linted), and the "
+            "eslint hook in lefthook.yml covers *.{js,json} only. Type-check with "
+            "`tsc`"
+        )
 
 
 def remove_submodule(root: Path) -> None:

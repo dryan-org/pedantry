@@ -1,4 +1,4 @@
-<!-- pedantry 2.0.0: managed by pedantry sync, do not edit. Put repo-specific rules in the repo's own AGENTS.md. -->
+<!-- pedantry 2.0.1: managed by pedantry sync, do not edit. Put repo-specific rules in the repo's own AGENTS.md. -->
 
 # Agent Instructions
 
