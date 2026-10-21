@@ -10,7 +10,14 @@ from pedantry import __version__
 from pedantry.content import vendor_install_hint
 from pedantry.migrate import execute, plan_migrate
 from pedantry.model import PedantryError, ProjectType
-from pedantry.sync import apply, compute, diff, resolve_pin
+from pedantry.sync import (
+    apply,
+    compute,
+    diff,
+    npm_pin_command,
+    resolve_pin,
+    run_npm_pin,
+)
 
 app = typer.Typer(
     help="Sync shared lint and format configuration into a repo.",
@@ -75,6 +82,11 @@ def sync(
     if not dry_run:
         apply(root, changes)
 
+    npm_command = npm_pin_command(root, resolved.pin.version) if upgrade else None
+    npm_note = None
+    if npm_command and not dry_run:
+        npm_note = run_npm_pin(root, npm_command)
+
     if as_json:
         typer.echo(
             json.dumps(
@@ -82,6 +94,11 @@ def sync(
                     "version": resolved.pin.version,
                     "dry_run": dry_run,
                     "changes": [{"path": c.path, "status": c.status} for c in changes],
+                    "npm": {
+                        "command": " ".join(npm_command) if npm_command else None,
+                        "ran": bool(npm_command) and not dry_run and npm_note is None,
+                        "note": npm_note,
+                    },
                 },
                 indent=2,
             )
@@ -95,6 +112,14 @@ def sync(
             typer.echo(diff(change))
     if not changes:
         typer.echo(f"already in sync with pedantry {resolved.pin.version}")
+    if npm_command:
+        line = " ".join(npm_command)
+        if dry_run:
+            typer.echo(f"would run {line}")
+        elif npm_note:
+            typer.echo(npm_note)
+        else:
+            typer.echo(f"ran {line}")
     if resolved.pin.vendor and (
         hint := vendor_install_hint(frozenset(resolved.pin.types))
     ):
@@ -206,4 +231,7 @@ def migrate(
     for file_path, text in sorted(plan.edits.items()):
         typer.echo(f"  - {file_path}" + (" (delete)" if text is None else ""))
     if not dry_run:
-        typer.echo("\nNothing is committed. Review with `git status` and `git diff`.")
+        typer.echo(
+            "\nNothing is committed. Written files are staged (except any your "
+            ".gitignore excludes). Review with `git status` and `git diff --staged`."
+        )

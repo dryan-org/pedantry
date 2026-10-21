@@ -25,7 +25,7 @@ Every repo pins a pedantry version. Upgrading is one edit plus `pedantry sync`, 
 You need [uv](https://docs.astral.sh/uv/) (every Mac and CI runner here has it). Run the CLI straight from GitHub at a tag:
 
 ```zsh
-uvx --from git+https://github.com/dryan-org/pedantry@v2.0.1 pedantry sync --type python --type typescript
+uvx --from git+https://github.com/dryan-org/pedantry@v2.0.2 pedantry sync --type python --type typescript
 ```
 
 `--type` is one or more of `python`, `typescript`, `javascript`, `css`, `django` (Django implies Python, JavaScript and CSS). The first sync also records the pin, so later runs need no options.
@@ -33,7 +33,7 @@ uvx --from git+https://github.com/dryan-org/pedantry@v2.0.1 pedantry sync --type
 For a repo with a `package.json`, add the npm package (it is not published to npmjs.org; it installs from GitHub like any `github:` dependency):
 
 ```zsh
-npm install --save-dev github:dryan-org/pedantry#v2.0.1
+npm install --save-dev github:dryan-org/pedantry#v2.0.2
 npm install --save-dev eslint prettier typescript   # whichever tools the repo uses
 ```
 
@@ -77,6 +77,10 @@ The Python block fits the repo instead of assuming a layout: ruff `target-versio
 
 Stamped files start with `pedantry X.Y.Z: managed by pedantry sync, do not edit.`
 
+The `eslint`, `stylelint` and `vulture` jobs are written only when the repo has the tool: an ESLint or Stylelint config file (or `eslintConfig` / `stylelint` key in `package.json`), and for vulture a dependency (`dependency-groups`, optional dependencies or `[project] dependencies`) or a `[tool.vulture]` table outside the managed block. `check` applies the same rule, so adding a config later makes `check` ask for a sync.
+
+`sync --upgrade` also moves the `@dryan/pedantry` npm pin in `package.json` to the new tag (`npm install --save-dev github:dryan-org/pedantry#vX.Y.Z`) when it lists the package; without npm it prints the command instead.
+
 With TypeScript 7 or later in `package.json`, the lefthook `eslint` job covers `*.{js,json}` only and says why; see "TypeScript 7" below.
 
 Safeguards: sync refuses to overwrite a `lefthook.yml` (or other whole-file target) that has no stamp, and it refuses to write a `pyproject.toml` that would define a managed table twice. In both cases it points you to `pedantry migrate`. `--force` overwrites anyway. `--dry-run` prints diffs and writes nothing.
@@ -86,7 +90,7 @@ Safeguards: sync refuses to overwrite a `lefthook.yml` (or other whole-file targ
 Exits 1 and lists the files that differ from what sync would write for the pinned version (`--diff` shows how). Edits outside the markers never count as drift. Run it in CI:
 
 ```yaml
-- run: uvx --from git+https://github.com/dryan-org/pedantry@v2.0.1 pedantry check
+- run: uvx --from git+https://github.com/dryan-org/pedantry@v2.0.2 pedantry check
 ```
 
 ### migrate
@@ -94,11 +98,12 @@ Exits 1 and lists the files that differ from what sync would write for the pinne
 Moves a repo that uses the old `.pedantry` git submodule and copied files. It never commits.
 
 1. Removes the submodule (`.gitmodules`, the index entry, the checkout), and replaces symlinks into it.
-2. With a `package.json`, runs `npm install --save-dev github:dryan-org/pedantry#vX.Y.Z` (skip with `--skip-npm`).
+2. With a `package.json` that uses JS or CSS tooling, or already lists `@dryan/pedantry`, runs `npm install --save-dev github:dryan-org/pedantry#vX.Y.Z` (skip with `--skip-npm`).
 3. Rewrites the `eslint.config.*` import to `@dryan/pedantry/eslint`, points `tsconfig.json` at `@dryan/pedantry/tsconfig` (dropping options identical to the base), drops `.pedantry` from ignores and excludes, and moves an empty `.prettierrc.json5` to `"prettier": "@dryan/pedantry/prettier"`.
 4. Writes the pin and runs sync. It also creates `CLAUDE.md` (`@AGENTS.md`) when missing, deletes an empty `.prettierrc.json5` in a repo with no `package.json`, and keeps the repo's `.editorconfig` header comments above the managed block. Tables it drops from `pyproject.toml` take their attached comments with them, and the managed block goes where the first dropped table was, so the rest keep their order.
-5. Initializes the old submodule first (`git submodule update --init .pedantry`) if it is not checked out, so the result does not depend on checkout state. Without network it says so and carries on.
-6. Prints a report: what it replaced (identical to pedantry, or a stale copy of an older pedantry), what it **preserved** (per-repo edits), and what needs a human.
+5. Stages what it wrote (the gitlink and `.gitmodules` removal first, then the new files, except paths your `.gitignore` excludes), so `git add -A` is not needed. Hooks for tools the repo lacks (no ESLint config, no vulture dependency) are left out of `lefthook.yml` and listed in the report.
+6. Initializes the old submodule first (`git submodule update --init .pedantry`) if it is not checked out, so the result does not depend on checkout state. Without network it says so and carries on.
+7. Prints a report: what it replaced (identical to pedantry, or a stale copy of an older pedantry), what it **preserved** (per-repo edits), and what needs a human.
 
 The report also flags: a repo that never had `[tool.ruff]` (the managed ruleset is new; run `ruff check --statistics`), `AGENTS.md` lines that still say "submodule", dangling symlinks into the old submodule (removed, nothing to restore), TypeScript 7, and symlinks that became regular files. Git sees that last change as a typechange, and `infra gh commit` before infra-core 1.2.2 keeps mode 120000 for it, so commit in two steps (delete the symlinks, then add the files); 1.2.2 and later handles it in one.
 
@@ -123,7 +128,7 @@ Tags are `vX.Y.Z` and cover both the npm package and the CLI. A repo's pin lives
 ```toml
 # pyproject.toml, or pedantry.toml (without the table header) in repos with no pyproject
 [tool.pedantry]
-version = "2.0.1"
+version = "2.0.2"
 types = ["python", "typescript"]
 ```
 
@@ -162,6 +167,8 @@ export default config;
 // package.json
 { "prettier": "@dryan/pedantry/prettier" }
 ```
+
+The Prettier export works for ESM and CommonJS repos alike (`require("@dryan/pedantry/prettier")` gets a plain config object).
 
 ```js
 // stylelint.config.mjs
@@ -202,7 +209,7 @@ typescript-eslint reads the TypeScript JS API, which TypeScript 7 (the native po
 For repos that cannot install from GitHub (for example Azure DevOps), sync writes everything locally:
 
 ```zsh
-uvx --from git+https://github.com/dryan-org/pedantry@v2.0.1 pedantry sync --type typescript --vendor
+uvx --from git+https://github.com/dryan-org/pedantry@v2.0.2 pedantry sync --type typescript --vendor
 ```
 
 This adds `.pedantry/eslint.config.ts`, `.pedantry/tsconfig.base.json`, `.pedantry/stylelint.config.mjs` and `.pedantry/helpers/*.js`, and records `vendor = true` in the pin so `check` covers them. The repo's own configs import them (`import pedantry from "./.pedantry/eslint.config"`, `"extends": "./.pedantry/tsconfig.base.json"`), and sync prints the `npm install --save-dev` line for the packages they import. Updates are manual: run sync again with a newer version.

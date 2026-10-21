@@ -1,6 +1,6 @@
 {
   "name": "@dryan/pedantry",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Opinionated linting and formatting configs (ESLint, TypeScript, Prettier, Stylelint) and the pedantry CLI that syncs the rest",
   "type": "module",
   "scripts": {
@@ -59,6 +59,7 @@
     "./tsconfig": "./src/pedantry/data/js/tsconfig.base.json",
     "./prettier": {
       "types": "./src/pedantry/data/js/prettier.d.ts",
+      "require": "./src/pedantry/data/js/prettier.cjs",
       "default": "./src/pedantry/data/js/prettier.js"
     },
     "./stylelint": {

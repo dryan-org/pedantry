@@ -15,13 +15,16 @@ from pedantry.config import load_pin
 from pedantry.content import (
     DJANGO_TABLES,
     EDITORCONFIG_BODY,
+    ESLINT_CONFIGS,
     PRETTIERIGNORE_BODY,
     PYTHON_TABLES,
     RETIRED_TABLES,
     data_file,
     detect_layout,
+    detect_tools,
     pyproject_tables,
     render_lefthook,
+    skipped_hooks,
     table_value,
     typescript_major,
 )
@@ -43,18 +46,18 @@ from pedantry.model import (
     effective,
     read_text,
 )
-from pedantry.sync import CLAUDE_IMPORT, ResolvedPin, compute, resolve_pin
+from pedantry.sync import (
+    CLAUDE_IMPORT,
+    ResolvedPin,
+    compute,
+    npm_pin_command,
+    resolve_pin,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 IMPORT_LINE = "@.pedantry/AGENTS.md"
-ESLINT_CONFIGS = (
-    "eslint.config.ts",
-    "eslint.config.mts",
-    "eslint.config.js",
-    "eslint.config.mjs",
-)
 COPIED_CONFIGS = (
     "stylelint.config.mjs",
     "rollup.config.js",
@@ -299,9 +302,16 @@ def _is_stale(section: TomlSection, header: str, body: str) -> bool:
 
 
 def migrate_lefthook(
-    root: Path, version: str, types: frozenset[ProjectType], report: Report
+    root: Path,
+    version: str,
+    types: frozenset[ProjectType],
+    report: Report,
+    tools: frozenset[str] | None = None,
 ) -> str | None:
     """Return the lefthook-local.yml text for repo extras (None if there are none)."""
+    if tools is not None:
+        for name, why in skipped_hooks(types, tools):
+            report.actions.append(f"lefthook.yml: no `{name}` hook ({why})")
     old = read_text(root / "lefthook.yml")
     if old is None:
         return None
@@ -310,7 +320,7 @@ def migrate_lefthook(
     generated = {
         command.name: command
         for command in parse_lefthook(
-            render_lefthook(version, types, ts_major)
+            render_lefthook(version, types, ts_major, tools)
         ).commands
     }
     extra_commands: list[str] = []
@@ -323,7 +333,7 @@ def migrate_lefthook(
         elif legacy.known("lefthook", command.name, command.key()):
             note = "stale copy of an older pedantry"
             if target is None:
-                note += ", not needed for this repo's types"
+                note += ", not needed for this repo"
             report.replaced.append(f"lefthook.yml: command `{command.name}` ({note})")
         else:
             extra_commands.extend(command.lines)
@@ -685,9 +695,22 @@ def plan_migrate(
     uses_npm = bool(
         kinds & {ProjectType.TYPESCRIPT, ProjectType.JAVASCRIPT, ProjectType.CSS}
     )
-    if (root / "package.json").is_file() and uses_npm and not vendor and not skip_npm:
+    lists_pedantry = npm_pin_command(root, __version__) is not None
+    if (
+        (root / "package.json").is_file()
+        and (uses_npm or lists_pedantry)
+        and not vendor
+        and not skip_npm
+    ):
         npm_install = f"npm install --save-dev github:dryan-org/pedantry#v{__version__}"
-        report.actions.append(f"ran `{npm_install}`")
+        if shutil.which("npm") is None:
+            report.manual.append(
+                f"npm is not installed, so @dryan/pedantry was not installed or "
+                f"bumped. Run: {npm_install}"
+            )
+            npm_install = None
+        else:
+            report.actions.append(f"ran `{npm_install}`")
 
     symlinks = submodule_symlinks(root)
 
@@ -704,7 +727,13 @@ def plan_migrate(
     ignore = migrate_prettierignore(root, report)
     if ignore is not None:
         overlay[".prettierignore"] = ignore
-    local = migrate_lefthook(root, __version__, frozenset(chosen), report)
+
+    def reader(path: str) -> str | None:
+        return overlay[path] if path in overlay else read_text(root / path)
+
+    local = migrate_lefthook(
+        root, __version__, frozenset(chosen), report, detect_tools(reader)
+    )
     if local is not None:
         if (root / "lefthook-local.yml").is_file():
             report.manual.append(
@@ -725,9 +754,6 @@ def plan_migrate(
         ),
         base.source,
     )
-
-    def reader(path: str) -> str | None:
-        return overlay[path] if path in overlay else read_text(root / path)
 
     edits.update(overlay)
     for change in compute(root, resolved, force=True, reader=reader):
@@ -879,7 +905,10 @@ def remove_submodule(root: Path) -> None:
 
 
 def execute(root: Path, plan: Plan) -> None:
-    """Apply a plan: the submodule removal first, then npm, then the file edits."""
+    """Apply a plan: the submodule removal first, then npm, then the file edits.
+
+    Everything written ends up staged (nothing is committed).
+    """
     for name in plan.symlinks:
         link = root / name
         content = link.read_bytes() if link.exists() else None
@@ -908,3 +937,24 @@ def execute(root: Path, plan: Plan) -> None:
         if target.is_symlink():
             target.unlink()
         target.write_text(text, encoding="utf-8")
+    stage(root, plan)
+
+
+def stage(root: Path, plan: Plan) -> None:
+    """Stage everything migrate wrote or deleted, so the result needs no ``git add -A``.
+
+    The gitlink and ``.gitmodules`` removals were staged already, and they come
+    before ``.pedantry/AGENTS.md`` is written, so the directory never has two
+    meanings in the index. A path the repo gitignores stays unstaged: that is the
+    repo's choice (``lefthook-local.yml`` is often ignored).
+    """
+    if not (root / ".git").exists():
+        return
+    paths = [path for path, text in plan.edits.items() if text is not None]
+    gone = [path for path, text in plan.edits.items() if text is None]
+    if plan.npm_install and (root / "package-lock.json").is_file():
+        paths.append("package-lock.json")
+    for path in paths:
+        git(root, "add", "--", path, check=False)
+    for path in gone:
+        git(root, "rm", "--cached", "-q", "--ignore-unmatch", "--", path)
