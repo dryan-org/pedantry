@@ -2,6 +2,7 @@
 
 import difflib
 import json
+import re
 import shutil
 import subprocess
 import tomllib
@@ -99,11 +100,55 @@ def resolve_pin(
 
 NPM_PACKAGE = "@dryan/pedantry"
 
+# Packages pedantry's shipped configs need at a minimum major (see the
+# peerDependencies in package.json). A consumer that lists one below it gets a
+# lockfile npm 10 rejects, so migrate and sync --upgrade raise it in the same
+# npm install that moves @dryan/pedantry.
+PEER_MAJORS = {"eslint": 10, "@eslint/js": 10, "stylelint": 17}
+
+_FIRST_NUMBER = re.compile(r"\d+")
+
+
+def _min_major(spec: str) -> int | None:
+    """The first major version a range names (``^9.1`` is 9); None if it names none."""
+    found = _FIRST_NUMBER.search(spec)
+    return int(found.group()) if found else None
+
+
+def peer_bumps(
+    root: Path, group: str = "devDependencies"
+) -> dict[str, tuple[str, str]]:
+    """Peer packages ``group`` lists below the required major: name -> (old, new)."""
+    text = read_text(root / "package.json")
+    try:
+        data = json.loads(text) if text else None
+    except json.JSONDecodeError:
+        return {}
+    listed = data.get(group) if isinstance(data, dict) else None
+    if not isinstance(listed, dict):
+        return {}
+    bumps: dict[str, tuple[str, str]] = {}
+    for name, major in PEER_MAJORS.items():
+        spec = listed.get(name)
+        if not isinstance(spec, str):
+            continue
+        current = _min_major(spec)
+        if current is not None and current < major:
+            bumps[name] = (spec, f"^{major}")
+    return bumps
+
+
+def describe_bumps(bumps: dict[str, tuple[str, str]]) -> list[str]:
+    return [f"{name} {old} -> {new}" for name, (old, new) in bumps.items()]
+
 
 def npm_pin_command(root: Path, version: str) -> list[str] | None:
     """The npm command that moves ``@dryan/pedantry`` to ``version``, if it needs one.
 
-    None when package.json does not list the package or already points at the tag.
+    It also raises ``eslint``, ``@eslint/js`` and ``stylelint`` when package.json
+    lists them below the major pedantry's configs need, so the lockfile comes out
+    consistent. None when package.json does not list the package, or when the
+    package already points at the tag and nothing else needs raising.
     """
     text = read_text(root / "package.json")
     if not text:
@@ -118,15 +163,13 @@ def npm_pin_command(root: Path, version: str) -> list[str] | None:
         group = data.get(key)
         spec = group.get(NPM_PACKAGE) if isinstance(group, dict) else None
         if isinstance(spec, str):
-            if spec.endswith(f"#v{version}"):
-                return None
             flag = "--save-dev" if key == "devDependencies" else "--save"
-            return [
-                "npm",
-                "install",
-                flag,
-                f"github:dryan-org/pedantry#v{version}",
+            specs = [
+                f"{name}@{new}" for name, (_, new) in peer_bumps(root, key).items()
             ]
+            if not spec.endswith(f"#v{version}"):
+                specs.insert(0, f"github:dryan-org/pedantry#v{version}")
+            return ["npm", "install", flag, *specs] if specs else None
     return None
 
 

@@ -472,3 +472,189 @@ def test_migrate_says_to_format_the_helper_configs_when_prettier_has_options(
     result = pedantry("migrate", "--path", str(root), "--type", "css", "--skip-npm")
 
     assert "Run `npx prettier --write stylelint.config.mjs`" in result.output
+
+
+# ----------------------------------- eslint 10 peers (lockfiles npm 10 accepts)
+
+
+@pytest.fixture
+def recording_npm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An ``npm`` that only records its arguments."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "npm.log"
+    script = bin_dir / "npm"
+    script.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\n')
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return log
+
+
+def old_eslint_package(**extra: str) -> str:
+    dev = {
+        "@dryan/pedantry": "github:dryan-org/pedantry#v1.0.0",
+        "eslint": "^9.39.2",
+        "@eslint/js": "^9.39.2",
+        "prettier": "^3.0.0",
+        **extra,
+    }
+    return json.dumps({"name": "d", "devDependencies": dev})
+
+
+def test_package_json_declares_the_eslint_peer() -> None:
+    package = json.loads((Path(__file__).parent.parent / "package.json").read_text())
+    assert package["peerDependencies"]["eslint"] == "^10"
+    assert "eslint" not in package.get("peerDependenciesMeta", {})
+    assert package["peerDependenciesMeta"]["stylelint"]["optional"] is True
+
+
+def test_sync_upgrade_raises_eslint_in_the_same_npm_call(
+    make_repo: MAKE, pedantry: CLI, recording_npm: Path, version: str
+) -> None:
+    root = make_repo(
+        {
+            "pedantry.toml": 'version = "1.0.0"\ntypes = ["javascript"]\n',
+            "package.json": old_eslint_package(stylelint="^16.0.0"),
+        }
+    )
+
+    result = pedantry("sync", "--path", str(root), "--upgrade")
+
+    assert result.exit_code == 0
+    assert recording_npm.read_text().split() == [
+        "install",
+        "--save-dev",
+        f"github:dryan-org/pedantry#v{version}",
+        "eslint@^10",
+        "@eslint/js@^10",
+        "stylelint@^17",
+    ]
+    assert "eslint ^9.39.2 -> ^10" in result.output
+
+
+def test_sync_upgrade_json_lists_the_bumps(
+    make_repo: MAKE, pedantry: CLI, recording_npm: Path
+) -> None:
+    root = make_repo(
+        {
+            "pedantry.toml": 'version = "1.0.0"\ntypes = ["javascript"]\n',
+            "package.json": old_eslint_package(),
+        }
+    )
+
+    result = pedantry("sync", "--path", str(root), "--upgrade", "--json")
+
+    npm = json.loads(result.output)["npm"]
+    assert npm["ran"] is True
+    assert npm["bumped"] == ["eslint ^9.39.2 -> ^10", "@eslint/js ^9.39.2 -> ^10"]
+    assert "eslint@^10 @eslint/js@^10" in npm["command"]
+    assert recording_npm.is_file()
+
+
+def test_sync_upgrade_leaves_current_and_unversioned_peers_alone(
+    make_repo: MAKE, pedantry: CLI, recording_npm: Path, version: str
+) -> None:
+    package = {
+        "name": "d",
+        "devDependencies": {
+            "@dryan/pedantry": "github:dryan-org/pedantry#v1.0.0",
+            "eslint": "^10.2.0",
+            "@eslint/js": "*",
+            "stylelint": "latest",
+        },
+    }
+    root = make_repo(
+        {
+            "pedantry.toml": 'version = "1.0.0"\ntypes = ["javascript"]\n',
+            "package.json": json.dumps(package),
+        }
+    )
+
+    pedantry("sync", "--path", str(root), "--upgrade")
+
+    assert recording_npm.read_text().split() == [
+        "install",
+        "--save-dev",
+        f"github:dryan-org/pedantry#v{version}",
+    ]
+
+
+def test_sync_upgrade_failing_npm_prints_the_bumps_in_the_rerun_command(
+    make_repo: MAKE, pedantry: CLI, failing_npm: Path
+) -> None:
+    root = make_repo(
+        {
+            "pedantry.toml": 'version = "1.0.0"\ntypes = ["javascript"]\n',
+            "package.json": old_eslint_package(),
+        }
+    )
+
+    result = pedantry("sync", "--path", str(root), "--upgrade", "--json")
+
+    npm = json.loads(result.output)["npm"]
+    assert result.exit_code == 0
+    assert npm["ran"] is False
+    assert "eslint@^10 @eslint/js@^10" in npm["note"]
+    assert failing_npm.is_file()
+
+
+def test_migrate_raises_eslint_in_the_same_npm_call(
+    make_repo: MAKE, pedantry: CLI, recording_npm: Path, version: str
+) -> None:
+    root = make_repo(
+        {
+            "package.json": old_eslint_package(),
+            "eslint.config.ts": "export default [];\n",
+            "src/a.ts": "export {};\n",
+        }
+    )
+
+    result = pedantry("migrate", "--path", str(root), "--type", "typescript")
+
+    assert result.exit_code == 0
+    assert recording_npm.read_text().split() == [
+        "install",
+        "--save-dev",
+        f"github:dryan-org/pedantry#v{version}",
+        "eslint@^10",
+        "@eslint/js@^10",
+    ]
+    assert "eslint ^9.39.2 -> ^10" in result.output
+
+
+def test_migrate_json_reports_the_bump_as_an_action(
+    make_repo: MAKE, pedantry: CLI, recording_npm: Path
+) -> None:
+    root = make_repo(
+        {
+            "package.json": old_eslint_package(),
+            "eslint.config.ts": "export default [];\n",
+            "src/a.ts": "export {};\n",
+        }
+    )
+
+    result = pedantry("migrate", "--path", str(root), "--type", "typescript", "--json")
+
+    actions = json.loads(result.output)["actions"]
+    assert any("@eslint/js ^9.39.2 -> ^10" in action for action in actions)
+    assert recording_npm.is_file()
+
+
+def test_migrate_failing_npm_drops_the_bump_action_and_prints_the_command(
+    make_repo: MAKE, pedantry: CLI, failing_npm: Path
+) -> None:
+    root = make_repo(
+        {
+            "package.json": old_eslint_package(),
+            "eslint.config.ts": "export default [];\n",
+            "src/a.ts": "export {};\n",
+        }
+    )
+
+    result = pedantry("migrate", "--path", str(root), "--type", "typescript", "--json")
+
+    report = json.loads(result.output)
+    assert result.exit_code == 0
+    assert not any("raised" in action for action in report["actions"])
+    assert any("eslint@^10 @eslint/js@^10" in note for note in report["manual"])
+    assert failing_npm.is_file()

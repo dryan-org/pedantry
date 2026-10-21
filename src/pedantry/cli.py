@@ -13,8 +13,10 @@ from pedantry.model import PedantryError, ProjectType
 from pedantry.sync import (
     apply,
     compute,
+    describe_bumps,
     diff,
     npm_pin_command,
+    peer_bumps,
     resolve_pin,
     run_npm,
 )
@@ -83,6 +85,10 @@ def sync(
         apply(root, changes)
 
     npm_command = npm_pin_command(root, resolved.pin.version) if upgrade else None
+    bumped: list[str] = []
+    if npm_command:
+        group = "dependencies" if "--save" in npm_command else "devDependencies"
+        bumped = describe_bumps(peer_bumps(root, group))
     npm_note = None
     if npm_command and not dry_run:
         npm_note = run_npm(root, npm_command)
@@ -98,6 +104,7 @@ def sync(
                         "command": " ".join(npm_command) if npm_command else None,
                         "ran": bool(npm_command) and not dry_run and npm_note is None,
                         "note": npm_note,
+                        "bumped": bumped,
                     },
                 },
                 indent=2,
@@ -120,6 +127,9 @@ def sync(
             typer.echo(npm_note)
         else:
             typer.echo(f"ran {line}")
+        if bumped and not npm_note:
+            verb = "would raise" if dry_run else "raised"
+            typer.echo(f"{verb} for pedantry's configs: {', '.join(bumped)}")
     if resolved.pin.vendor and (
         hint := vendor_install_hint(frozenset(resolved.pin.types))
     ):

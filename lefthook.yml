@@ -1,4 +1,4 @@
-# pedantry 2.0.2: managed by pedantry sync, do not edit.
+# pedantry 2.0.3: managed by pedantry sync, do not edit.
 # Repo-specific hooks go in lefthook-local.yml, which lefthook merges in.
 pre-commit:
   parallel: false
