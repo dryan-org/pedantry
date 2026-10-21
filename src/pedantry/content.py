@@ -249,6 +249,50 @@ def detect_tools(read: Callable[[str], str | None]) -> frozenset[str]:
     return frozenset(tools)
 
 
+_HOOK_TOOLS = {
+    "eslint": "eslint",
+    "stylelint": "stylelint",
+    "vulture": "vulture",
+    "prettier": "prettier",
+    "ruff-check": "ruff",
+    "ruff-format": "ruff",
+}
+
+
+def tools_from_lefthook(text: str | None) -> frozenset[str]:
+    """The tools an existing lefthook.yml runs, by its command names."""
+    if not text:
+        return frozenset()
+    found = re.findall(r"(?m)^    ([\w-]+):\s*$", text)
+    return frozenset(_HOOK_TOOLS[name] for name in found if name in _HOOK_TOOLS)
+
+
+def used_tools(read: Callable[[str], str | None]) -> frozenset[str]:
+    """Tools a repo set up before migrating: hooks, configs and tables.
+
+    Unlike :func:`detect_tools` this looks at the managed pyproject tables too,
+    since a table identical to pedantry's is absorbed into the managed block by
+    migrate and would leave no trace.
+    """
+    tools = set(detect_tools(read)) | tools_from_lefthook(read("lefthook.yml"))
+    pyproject = read("pyproject.toml")
+    if pyproject:
+        try:
+            tool = tomllib.loads(without_block(pyproject)).get("tool", {})
+        except tomllib.TOMLDecodeError:
+            tool = {}
+        for name in ("vulture", "ruff", "ty"):
+            if name in tool:
+                tools.add(name)
+    package = _package_json(read("package.json"))
+    if "prettier" in package or any(
+        (read(name) is not None)
+        for name in (".prettierrc", ".prettierrc.json", ".prettierrc.json5")
+    ):
+        tools.add("prettier")
+    return frozenset(tools)
+
+
 _TOOL_HINTS = {
     "eslint": "no ESLint config file found",
     "stylelint": "no Stylelint config file found",

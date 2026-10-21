@@ -23,11 +23,15 @@ def parse_pin(table: dict[str, object], source: str) -> Pin:
     keep = table.get("keep", [])
     if not isinstance(keep, list):
         raise PedantryError(f"{source}: `keep` must be a list of table names")
+    tools = table.get("tools")
+    if tools is not None and not isinstance(tools, list):
+        raise PedantryError(f"{source}: `tools` must be a list of tool names")
     return Pin(
         version=version,
         types=parsed,
         vendor=bool(table.get("vendor", False)),
         keep=[str(item) for item in keep],
+        tools=None if tools is None else [str(item) for item in tools],
     )
 
 
@@ -60,6 +64,8 @@ def render_pin_table(pin: Pin, *, header: bool) -> str:
         lines.append("vendor = true")
     if pin.keep:
         lines.append("keep = [" + ", ".join(f'"{k}"' for k in pin.keep) + "]")
+    if pin.tools is not None:
+        lines.append("tools = [" + ", ".join(f'"{t}"' for t in pin.tools) + "]")
     return "\n".join(lines)
 
 
@@ -103,4 +109,6 @@ def _as_table(pin: Pin) -> dict[str, object]:
         table["vendor"] = True
     if pin.keep:
         table["keep"] = list(pin.keep)
+    if pin.tools is not None:
+        table["tools"] = list(pin.tools)
     return table

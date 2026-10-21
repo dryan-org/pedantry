@@ -24,6 +24,7 @@ from pedantry.content import (
     render_agents,
     render_lefthook,
     render_pyproject_block,
+    tools_from_lefthook,
     typescript_major,
     vendored_files,
 )
@@ -90,6 +91,11 @@ def resolve_pin(
                 f"To move to {__version__}: pedantry sync --upgrade"
             )
         pin.version = __version__
+        if pin.tools is None:
+            # An upgrade must not drop a hook the repo had: record what it ran.
+            current = read_text(root / "lefthook.yml")
+            if current is not None:
+                pin.tools = sorted(tools_from_lefthook(current))
     if types:
         pin.types = types
     if vendor:
@@ -211,7 +217,7 @@ def compute(
             pin.version,
             types,
             typescript_major(read("package.json")),
-            detect_tools(read),
+            detect_tools(read) | frozenset(pin.tools or ()),
         ),
         ".pedantry/AGENTS.md": render_agents(pin.version),
     }.items():

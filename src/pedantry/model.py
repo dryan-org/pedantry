@@ -48,6 +48,8 @@ class Pin:
     vendor: bool = False
     # Managed pyproject tables the repo keeps for itself, e.g. "tool.ruff.lint".
     keep: list[str] = field(default_factory=list)
+    # Tools whose hooks the repo wants whatever detection finds (None: not recorded).
+    tools: list[str] | None = None
 
 
 @dataclass

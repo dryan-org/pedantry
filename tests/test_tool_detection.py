@@ -2,11 +2,15 @@
 
 import json
 import os
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from conftest import Result
+
+from pedantry.content import render_lefthook
+from pedantry.model import ProjectType
 
 MAKE = Callable[..., Path]
 CLI = Callable[..., Result]
@@ -246,3 +250,101 @@ def test_migrate_bumps_a_listed_npm_pin(
 
     assert result.exit_code == 0, result.output
     assert f"github:dryan-org/pedantry#v{version}" in fake_npm.read_text()
+
+
+# ------------------------------------------------ tools recorded in the pin
+
+
+def test_migrate_keeps_the_vulture_hook_when_its_table_is_absorbed(
+    make_repo: MAKE, pedantry: CLI
+) -> None:
+    vulture = (
+        "[tool.vulture]\nmin_confidence = 80\n\n"
+        'ignore_names = [\n    "*_test.py",\n    "test_*.py",\n]\n\n'
+        'exclude = [\n    ".venv/",\n    "venv/",\n    "node_modules/",\n'
+        '    "migrations/",  # Django migrations\n]\n'
+    )
+    root = make_repo({"pyproject.toml": PYPROJECT + "\n" + vulture})
+
+    result = pedantry("migrate", "--path", str(root), "--type", "python")
+
+    assert result.exit_code == 0, result.output
+    assert "vulture" in hooks(root)
+    pin = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["pedantry"]
+    assert "vulture" in pin["tools"]
+    assert pedantry("check", "--path", str(root)).exit_code == 0
+
+
+def test_migrate_records_tools_from_the_old_lefthook_and_configs(
+    make_repo: MAKE, pedantry: CLI
+) -> None:
+    old = (
+        "pre-commit:\n  commands:\n    eslint:\n      run: npx eslint\n"
+        "    stylelint:\n      run: npx stylelint\n"
+    )
+    root = make_repo({"package.json": PACKAGE, "lefthook.yml": old})
+
+    result = pedantry(
+        "migrate", "--path", str(root), "--skip-npm", "--type", "typescript"
+    )
+
+    assert result.exit_code == 0, result.output
+    pin = tomllib.loads((root / "pedantry.toml").read_text())
+    assert pin["tools"] == ["eslint", "stylelint"]
+    assert {"eslint"} <= hooks(root)
+
+
+def v201_repo(make_repo: MAKE) -> Path:
+    managed = render_lefthook("2.0.1", frozenset({ProjectType.TYPESCRIPT}))
+    return make_repo(
+        {
+            "package.json": PACKAGE,
+            "lefthook.yml": managed,
+            "pedantry.toml": 'version = "2.0.1"\ntypes = ["typescript"]\n',
+        }
+    )
+
+
+def test_upgrade_from_a_pin_without_tools_keeps_existing_hooks(
+    make_repo: MAKE, pedantry: CLI
+) -> None:
+    root = v201_repo(make_repo)
+    assert "eslint" in hooks(root)
+
+    result = pedantry("sync", "--path", str(root), "--upgrade")
+
+    assert result.exit_code == 0, result.output
+    assert "eslint" in hooks(root)
+    pin = tomllib.loads((root / "pedantry.toml").read_text())
+    assert pin["tools"] == ["eslint", "prettier"]
+    assert pedantry("check", "--path", str(root)).exit_code == 0
+
+
+def test_removing_a_tool_from_the_pin_drops_its_hook(
+    make_repo: MAKE, pedantry: CLI
+) -> None:
+    root = v201_repo(make_repo)
+    pedantry("sync", "--path", str(root), "--upgrade")
+    pin_file = root / "pedantry.toml"
+    pin_file.write_text(
+        pin_file.read_text().replace('"eslint", ', "").replace('"eslint"', "")
+    )
+
+    assert pedantry("check", "--path", str(root)).exit_code == 1
+    pedantry("sync", "--path", str(root))
+
+    assert "eslint" not in hooks(root)
+    assert pedantry("check", "--path", str(root)).exit_code == 0
+
+
+def test_adding_a_tool_to_the_pin_adds_its_hook(make_repo: MAKE, pedantry: CLI) -> None:
+    root = make_repo({"package.json": PACKAGE})
+    pedantry("sync", "--path", str(root), "--type", "css")
+    assert "stylelint" not in hooks(root)
+    pin_file = root / "pedantry.toml"
+    pin_file.write_text(pin_file.read_text() + 'tools = ["stylelint"]\n')
+
+    pedantry("sync", "--path", str(root))
+
+    assert "stylelint" in hooks(root)
+    assert pedantry("check", "--path", str(root)).exit_code == 0

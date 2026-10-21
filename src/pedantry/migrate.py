@@ -27,6 +27,7 @@ from pedantry.content import (
     skipped_hooks,
     table_value,
     typescript_major,
+    used_tools,
 )
 from pedantry.formats import (
     TomlSection,
@@ -731,9 +732,12 @@ def plan_migrate(
     def reader(path: str) -> str | None:
         return overlay[path] if path in overlay else read_text(root / path)
 
-    local = migrate_lefthook(
-        root, __version__, frozenset(chosen), report, detect_tools(reader)
-    )
+    if existing is not None and existing.tools is not None:
+        # Already recorded by an earlier migrate: the list is the user's now.
+        tools = frozenset(existing.tools) | detect_tools(reader)
+    else:
+        tools = used_tools(lambda path: read_text(root / path)) | detect_tools(reader)
+    local = migrate_lefthook(root, __version__, frozenset(chosen), report, tools)
     if local is not None:
         if (root / "lefthook-local.yml").is_file():
             report.manual.append(
@@ -751,6 +755,7 @@ def plan_migrate(
             types=base.pin.types,
             vendor=base.pin.vendor,
             keep=sorted(set(base.pin.keep) | set(keep)),
+            tools=sorted(tools),
         ),
         base.source,
     )

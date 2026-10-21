@@ -79,6 +79,8 @@ Stamped files start with `pedantry X.Y.Z: managed by pedantry sync, do not edit.
 
 The `eslint`, `stylelint` and `vulture` jobs are written only when the repo has the tool: an ESLint or Stylelint config file (or `eslintConfig` / `stylelint` key in `package.json`), and for vulture a dependency (`dependency-groups`, optional dependencies or `[project] dependencies`) or a `[tool.vulture]` table outside the managed block. `check` applies the same rule, so adding a config later makes `check` ask for a sync.
 
+The pin can also list `tools` (`tools = ["eslint", "vulture"]` in `[tool.pedantry]` or `pedantry.toml`): hooks are written for those tools plus whatever is detected now. `migrate` records the tools the repo used before (from its old `lefthook.yml` commands, configs and pyproject tables, which matters for a `[tool.vulture]` identical to pedantry's that the managed block absorbs), and `sync --upgrade` on a pin without `tools` records the hooks in the current `lefthook.yml`, so an upgrade never drops a hook. Edit the list to add or drop a hook; a tool that is still detected (a config file, a dependency) keeps its hook.
+
 `sync --upgrade` also moves the `@dryan/pedantry` npm pin in `package.json` to the new tag (`npm install --save-dev github:dryan-org/pedantry#vX.Y.Z`) when it lists the package; without npm it prints the command instead.
 
 With TypeScript 7 or later in `package.json`, the lefthook `eslint` job covers `*.{js,json}` only and says why; see "TypeScript 7" below.
