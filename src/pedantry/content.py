@@ -1,10 +1,17 @@
 """The text pedantry manages, as a function of version and project types."""
 
+import json
+import re
 import tomllib
+from dataclasses import dataclass
 from importlib.resources import files
+from typing import TYPE_CHECKING
 
 from pedantry.blocks import wrap_block
 from pedantry.model import MANAGED_PHRASE, ProjectType, effective
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ------------------------------------------------------------------ stamps
 
@@ -129,19 +136,49 @@ def _staged(tool: str, *, fix: bool = True, comment: str, name: str, glob: str) 
 """
 
 
-def lefthook_commands(types: frozenset[ProjectType]) -> list[tuple[str, str]]:
-    """(command name, YAML text) for each pre-commit hook the types need."""
+def typescript_major(package_json: str | None) -> int | None:
+    """The major version package.json asks of TypeScript, if it says."""
+    if not package_json:
+        return None
+    try:
+        data = json.loads(package_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    for key in ("devDependencies", "dependencies", "peerDependencies"):
+        group = data.get(key)
+        spec = group.get("typescript") if isinstance(group, dict) else None
+        if isinstance(spec, str) and (match := re.search(r"\d+", spec)):
+            return int(match.group())
+    return None
+
+
+def lefthook_commands(
+    types: frozenset[ProjectType], ts_major: int | None = None
+) -> list[tuple[str, str]]:
+    """(command name, YAML text) for each pre-commit hook the types need.
+
+    ``ts_major`` is the TypeScript major the repo uses: typescript-eslint cannot
+    run on 7 or later, so the eslint hook then covers JavaScript and JSON only.
+    """
     kinds = effective(types)
     commands = [("prettier", _PRETTIER)]
     if kinds & {ProjectType.TYPESCRIPT, ProjectType.JAVASCRIPT}:
+        no_ts = ts_major is not None and ts_major >= 7
         commands.append(
             (
                 "eslint",
                 _staged(
                     "npx eslint --fix",
-                    comment="Lint JavaScript and TypeScript",
+                    comment=(
+                        "Lint JavaScript and JSON (typescript-eslint cannot run on "
+                        "TypeScript 7, so TypeScript files are left to tsc)"
+                        if no_ts
+                        else "Lint JavaScript and TypeScript"
+                    ),
                     name="eslint",
-                    glob="*.{js,ts,json}",
+                    glob="*.{js,json}" if no_ts else "*.{js,ts,json}",
                 ),
             )
         )
@@ -206,20 +243,74 @@ def lefthook_commands(types: frozenset[ProjectType]) -> list[tuple[str, str]]:
 DJANGO_TARGET = "5.1"
 
 
-def render_lefthook(version: str, types: frozenset[ProjectType]) -> str:
+def render_lefthook(
+    version: str, types: frozenset[ProjectType], ts_major: int | None = None
+) -> str:
     header = (
         f"# {stamp(version)}\n"
         "# Repo-specific hooks go in lefthook-local.yml, which lefthook merges in.\n"
     )
-    body = "\n".join(text for _, text in lefthook_commands(types))
+    body = "\n".join(text for _, text in lefthook_commands(types, ts_major))
     return f"{header}pre-commit:\n  parallel: false\n  commands:\n{body}"
 
 
 # ------------------------------------------------------------ pyproject.toml
 
-_RUFF = """\
-# Target Python 3.14+ (adjust as needed for your projects)
-target-version = "py314"
+DEFAULT_PYTHON = (3, 13)
+
+
+@dataclass(frozen=True)
+class Layout:
+    """What the repo looks like, so the managed Python config fits it."""
+
+    python: tuple[int, int] = DEFAULT_PYTHON
+    ty_include: tuple[str, ...] = ("src",)
+    testpaths: tuple[str, ...] | None = ("tests",)
+
+
+_REQUIRES_PYTHON = re.compile(r"(?:>=|~=|==|>)\s*(\d+)\.(\d+)")
+_NOT_PACKAGES = {"tests", "test", "node_modules", "venv", "env", "build", "dist"}
+
+
+def python_lower_bound(pyproject: str | None) -> tuple[int, int]:
+    """Oldest Python ``requires-python`` allows (3.13 when it says nothing)."""
+    if pyproject:
+        try:
+            spec = tomllib.loads(pyproject).get("project", {}).get("requires-python")
+        except tomllib.TOMLDecodeError:
+            spec = None
+        if isinstance(spec, str) and (match := _REQUIRES_PYTHON.search(spec)):
+            return int(match.group(1)), int(match.group(2))
+    return DEFAULT_PYTHON
+
+
+def detect_layout(root: Path, pyproject: str | None) -> Layout:
+    """ty ``include`` and pytest ``testpaths`` follow the repo's directories."""
+    if (root / "src").is_dir():
+        include = ("src",)
+    else:
+        packages = sorted(
+            child.name
+            for child in root.iterdir()
+            if child.is_dir()
+            and not child.name.startswith(".")
+            and child.name not in _NOT_PACKAGES
+            and (child / "__init__.py").is_file()
+        )
+        include = tuple(packages) or (".",)
+    tests = next((n for n in ("tests", "test") if (root / n).is_dir()), None)
+    return Layout(
+        python=python_lower_bound(pyproject),
+        ty_include=include,
+        testpaths=(tests,) if tests else None,
+    )
+
+
+def _ruff(layout: Layout) -> str:
+    major, minor = layout.python
+    return f"""\
+# Oldest Python this repo supports: [project] requires-python, else 3.13
+target-version = "py{major}{minor}"
 
 # Same as Black
 line-length = 88
@@ -238,6 +329,7 @@ exclude = [
     "*.egg-info",
 ]
 """
+
 
 _RUFF_LINT = """\
 # Enable pycodestyle (`E`), pyflakes (`F`), isort (`I`), and more
@@ -277,8 +369,21 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 """
 
+
+def _pytest(layout: Layout) -> str:
+    testpaths = (
+        ""
+        if layout.testpaths is None
+        else f"testpaths = {_toml_list(layout.testpaths)}\n"
+    )
+    return testpaths + _PYTEST
+
+
+def _toml_list(items: tuple[str, ...]) -> str:
+    return "[" + ", ".join(json.dumps(item) for item in items) + "]"
+
+
 _PYTEST = """\
-testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -289,14 +394,20 @@ addopts = [
 ]
 """
 
-_TY_ENVIRONMENT = """\
-python-version = "3.14"
-"""
 
-_TY_SRC = """\
+def _ty_environment(layout: Layout) -> str:
+    return f'python-version = "{layout.python[0]}.{layout.python[1]}"\n'
+
+
+def _ty_src(layout: Layout) -> str:
+    return f"""\
 # Files to check
-include = ["src"]
+include = {_toml_list(layout.ty_include)}
 
+{_TY_EXCLUDE}"""
+
+
+_TY_EXCLUDE = """\
 # Files to exclude from type checking
 exclude = [
     "**/__pycache__",
@@ -345,28 +456,36 @@ _DJANGO_UPGRADE = f"""\
 target-version = "{DJANGO_TARGET}"
 """
 
-# Ordered (header, body). Each is one TOML table.
-PYTHON_TABLES: list[tuple[str, str]] = [
-    ("tool.ruff", _RUFF),
-    ("tool.ruff.lint", _RUFF_LINT),
-    ("tool.ruff.format", _RUFF_FORMAT),
-    ("tool.pytest.ini_options", _PYTEST),
-    ("tool.ty.environment", _TY_ENVIRONMENT),
-    ("tool.ty.src", _TY_SRC),
-    ("tool.ty.rules", _TY_RULES),
-    ("tool.ty.terminal", _TY_TERMINAL),
-    ("tool.vulture", _VULTURE),
-]
+
+def python_tables(layout: Layout) -> list[tuple[str, str]]:
+    """Ordered (header, body); each is one TOML table."""
+    return [
+        ("tool.ruff", _ruff(layout)),
+        ("tool.ruff.lint", _RUFF_LINT),
+        ("tool.ruff.format", _RUFF_FORMAT),
+        ("tool.pytest.ini_options", _pytest(layout)),
+        ("tool.ty.environment", _ty_environment(layout)),
+        ("tool.ty.src", _ty_src(layout)),
+        ("tool.ty.rules", _TY_RULES),
+        ("tool.ty.terminal", _TY_TERMINAL),
+        ("tool.vulture", _VULTURE),
+    ]
+
+
+DEFAULT_LAYOUT = Layout()
+PYTHON_TABLES = python_tables(DEFAULT_LAYOUT)
 DJANGO_TABLES: list[tuple[str, str]] = [("tool.django-upgrade", _DJANGO_UPGRADE)]
 # Tables v1 copies carried that are gone in v2: dropped on migrate when stale.
 RETIRED_TABLES = ["tool.pyupgrade", "tool.pyright"]
 
 
-def pyproject_tables(types: frozenset[ProjectType]) -> list[tuple[str, str]]:
+def pyproject_tables(
+    types: frozenset[ProjectType], layout: Layout = DEFAULT_LAYOUT
+) -> list[tuple[str, str]]:
     kinds = effective(types)
     if ProjectType.PYTHON not in kinds:
         return []
-    tables = list(PYTHON_TABLES)
+    tables = python_tables(layout)
     if ProjectType.DJANGO in kinds:
         tables += DJANGO_TABLES
     return tables
@@ -383,9 +502,12 @@ def table_value(header: str, body: str) -> dict[str, object]:
 
 
 def render_pyproject_block(
-    version: str, types: frozenset[ProjectType], keep: list[str]
+    version: str,
+    types: frozenset[ProjectType],
+    keep: list[str],
+    layout: Layout = DEFAULT_LAYOUT,
 ) -> str | None:
-    tables = [(h, b) for h, b in pyproject_tables(types) if h not in keep]
+    tables = [(h, b) for h, b in pyproject_tables(types, layout) if h not in keep]
     if not tables:
         return None
     body = "\n".join(f"[{header}]\n{text}" for header, text in tables)

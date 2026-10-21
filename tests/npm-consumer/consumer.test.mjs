@@ -1,7 +1,9 @@
 import { execFileSync } from "node:child_process";
 import {
   cpSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   writeFileSync,
@@ -17,11 +19,11 @@ const repo = resolve(here, "..", "..");
 const work = mkdtempSync(join(tmpdir(), "pedantry-consumer-"));
 const consumer = join(work, "consumer");
 
-/** Run a command in the fixture consumer and return its output. */
-function run(command, args, { allowFailure = false } = {}) {
+/** Run a command in a consumer directory (default: the fixture) and return its output. */
+function run(command, args, { allowFailure = false, cwd = consumer } = {}) {
   try {
     return execFileSync(command, args, {
-      cwd: consumer,
+      cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -122,5 +124,58 @@ describe("@dryan/pedantry installed into a consumer", () => {
       "./vitest",
       "./web-test-runner",
     ]);
+  });
+});
+
+describe("@dryan/pedantry/eslint on TypeScript 7", () => {
+  const consumer7 = join(work, "consumer7");
+
+  before(() => {
+    mkdirSync(join(consumer7, "src"), { recursive: true });
+    cpSync(
+      join(here, "fixture", "package.json"),
+      join(consumer7, "package.json"),
+    );
+    cpSync(
+      join(here, "fixture", "eslint.config.template.ts"),
+      join(consumer7, "eslint.config.ts"),
+    );
+    writeFileSync(join(consumer7, "src", "ok.js"), "export const ok = 1;\n");
+    writeFileSync(join(consumer7, "src", "bad.js"), "const unused = 1;\n");
+    writeFileSync(join(consumer7, "src", "ts.ts"), "const x: number = 1;\n");
+    const packed = readdirSync(work).find((name) => name.endsWith(".tgz"));
+    run(
+      "npm",
+      [
+        "install",
+        "--no-audit",
+        "--no-fund",
+        "--ignore-scripts",
+        join(work, packed),
+        "eslint",
+        "typescript@7",
+      ],
+      { cwd: consumer7 },
+    );
+  });
+
+  it("loads, warns, and lints JavaScript without typescript-eslint", () => {
+    const ok = run("npx", ["eslint", "src/ok.js"], { cwd: consumer7 });
+    assert.doesNotMatch(ok, /error/);
+    const bad = run("npx", ["eslint", "src/bad.js"], {
+      cwd: consumer7,
+      allowFailure: true,
+    });
+    assert.match(bad, /no-unused-vars/);
+    assert.match(bad, /TypeScript 7/);
+  });
+
+  it("does not try to parse TypeScript files", () => {
+    const output = run("npx", ["eslint", "."], {
+      cwd: consumer7,
+      allowFailure: true,
+    });
+    assert.doesNotMatch(output, /Parsing error|ts\.TypeFlags/);
+    assert.doesNotMatch(output, /src\/ts\.ts/);
   });
 });

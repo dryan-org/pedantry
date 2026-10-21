@@ -14,11 +14,13 @@ from pedantry.config import (
     render_pin_file,
 )
 from pedantry.content import (
+    detect_layout,
     editorconfig_block,
     prettierignore_block,
     render_agents,
     render_lefthook,
     render_pyproject_block,
+    typescript_major,
     vendored_files,
 )
 from pedantry.model import (
@@ -104,17 +106,27 @@ def _validate_pyproject(text: str) -> None:
         ) from err
 
 
-def render_pyproject(text: str | None, pin: Pin, *, pin_here: bool) -> str:
+def render_pyproject(text: str | None, pin: Pin, *, pin_here: bool, root: Path) -> str:
     out = text or ""
     if pin_here:
         out = put_pin_in_pyproject(out, pin)
-    block = render_pyproject_block(pin.version, frozenset(pin.types), pin.keep)
+    layout = detect_layout(root, text)
+    block = render_pyproject_block(pin.version, frozenset(pin.types), pin.keep, layout)
     if block is not None:
         out = put_block(out, block)
     elif find_block(out) is not None:
         out = without_block(out)
     _validate_pyproject(out)
     return out
+
+
+CLAUDE_IMPORT = "@AGENTS.md\n"
+
+
+def _exists(root: Path, path: str, read: Callable[[str], str | None]) -> bool:
+    """Whether a file is there: in-memory edits and symlinks (even dangling) count."""
+    target = root / path
+    return read(path) is not None or target.exists() or target.is_symlink()
 
 
 def _managed(text: str | None) -> bool:
@@ -147,7 +159,9 @@ def compute(
         read(".prettierignore"), prettierignore_block(pin.version), at_top=True
     )
     for path, text in {
-        "lefthook.yml": render_lefthook(pin.version, types),
+        "lefthook.yml": render_lefthook(
+            pin.version, types, typescript_major(read("package.json"))
+        ),
         ".pedantry/AGENTS.md": render_agents(pin.version),
     }.items():
         targets[path] = text
@@ -156,10 +170,13 @@ def compute(
     pin_in_pyproject = resolved.source == "pyproject.toml"
     if pin_in_pyproject or ProjectType.PYTHON in kinds:
         targets["pyproject.toml"] = render_pyproject(
-            read("pyproject.toml"), pin, pin_here=pin_in_pyproject
+            read("pyproject.toml"), pin, pin_here=pin_in_pyproject, root=root
         )
     if not pin_in_pyproject:
         targets[PIN_FILE] = render_pin_file(pin)
+
+    if read("AGENTS.md") is not None and not _exists(root, "CLAUDE.md", read):
+        targets["CLAUDE.md"] = CLAUDE_IMPORT
 
     if pin.vendor:
         for path, text in vendored_files(pin.version, types).items():
