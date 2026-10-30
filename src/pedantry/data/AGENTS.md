@@ -67,16 +67,15 @@ If verification fails, continue fixing until it actually works.
 
 ## Show Full Output for Debugging
 
-**Never hide command output with `head`, `tail`, or similar filtering tools.**
+**Never ignore output. Keep every command's full output on disk, and read only what you need.**
 
 When running commands for verification or debugging:
 
-- Show the full output so the user can help diagnose issues
-- Don't truncate output with `head -n 10`, `tail -n 20`, etc.
-- Don't pipe through `grep` unless specifically filtering for known patterns
-- Let the user see all errors, warnings, and diagnostic information
+- Write every command's full output to a log file at a path the user can open, so an issue can be debugged without running the problem again
+- Read only the verdict and the failing lines into the conversation; never filter output in a way that leaves the file incomplete
+- Delete the log once success is verified; a failure's log stays until it is debugged
 
-The user needs complete information to assist with debugging. Hiding output makes troubleshooting harder.
+A complete log lets anyone diagnose a failure without reproducing it, and keeps the conversation short.
 
 ---
 

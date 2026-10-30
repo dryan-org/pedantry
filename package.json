@@ -1,6 +1,6 @@
 {
   "name": "@dryan/pedantry",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "Opinionated linting and formatting configs (ESLint, TypeScript, Prettier, Stylelint) and the pedantry CLI that syncs the rest",
   "type": "module",
   "scripts": {
