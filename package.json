@@ -48,7 +48,7 @@
     "rollup-plugin-summary": ">=2",
     "stylelint": "^17.16.0",
     "typescript": "~6.0.0",
-    "vitest": ">=3"
+    "vitest": "^5.0.5"
   },
   "repository": "github:dryan-org/pedantry",
   "exports": {
